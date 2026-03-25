@@ -61,12 +61,36 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: "D-Mate ${{ github.ref_name }}"
           releaseBody: |
-            D-Mate ${{ github.ref_name }} 릴리즈
+            ## D-Mate ${{ github.ref_name }}
 
             ### 다운로드
-            - **macOS (Apple Silicon)**: `.dmg` 파일
-            - **macOS (Intel)**: `.dmg` 파일
-            - **Windows**: `.exe` 설치 파일
+            | OS | 파일 |
+            |------|------|
+            | macOS (Apple Silicon) | `D-Mate_*_aarch64.dmg` |
+            | macOS (Intel) | `D-Mate_*_x64.dmg` |
+            | Windows | `D-Mate_*_x64-setup.exe` |
+
+            ---
+
+            ### macOS 설치
+            1. DMG 다운로드 → 열기 → **Applications 폴더로 드래그**
+            2. 터미널에서 보안 해제 (최초 1회):
+            ```bash
+            xattr -cr /Applications/D-Mate.app
+            ```
+            3. Applications에서 D-Mate 실행
+            4. Keychain 접근 → **"항상 허용"** 선택
+
+            ### Windows 설치
+            1. `.exe` 다운로드
+            2. **스마트 앱 컨트롤** 차단 시: 설정 → 개인 정보 및 보안 → Windows 보안 → 앱 및 브라우저 컨트롤 → 스마트 앱 컨트롤 → **끄기**
+            3. SmartScreen 경고 시: **"추가 정보" → "실행"**
+            4. 설치 마법사 진행
+
+            ### 텔레그램 봇 생성
+            1. 텔레그램에서 **@BotFather** 검색 → `/newbot` → 봇 생성
+            2. 발급된 **토큰**을 D-Mate에 입력
+            3. 봇에게 메시지 전송 후 → D-Mate에서 **채팅 조회**
           releaseDraft: true
           prerelease: false
           args: --target ${{ matrix.target }}
