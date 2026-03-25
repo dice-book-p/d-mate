@@ -349,8 +349,15 @@ pub async fn check_update() -> Result<Value, String> {
                 let latest = data["version"].as_str().unwrap_or("0.0.0");
                 let current = env!("CARGO_PKG_VERSION");
                 let available = latest > current;
-                let os = if cfg!(target_os = "macos") { "mac" } else { "windows" };
-                let download_url = data["download"][os].as_str().unwrap_or("");
+                let platform_key = if cfg!(target_os = "macos") {
+                    if cfg!(target_arch = "aarch64") { "mac_aarch64" } else { "mac_x64" }
+                } else {
+                    "windows"
+                };
+                // fallback: 정확한 키 없으면 "mac" 키도 확인
+                let download_url = data["download"][platform_key].as_str()
+                    .or_else(|| data["download"]["mac"].as_str())
+                    .unwrap_or("");
                 Ok(serde_json::json!({
                     "available": available,
                     "current": current,
