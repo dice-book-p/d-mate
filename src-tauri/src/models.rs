@@ -96,7 +96,7 @@ impl Default for Settings {
             work_days: "mon-fri".into(),
             autostart: 0,
             error_reporting: 1,
-            update_server_url: String::new(),
+            update_server_url: "http://192.168.204.53:18900".into(),
         }
     }
 }

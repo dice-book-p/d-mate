@@ -59,7 +59,7 @@ pub fn init_db() {
             work_days TEXT DEFAULT 'mon-fri',
             autostart INTEGER DEFAULT 0,
             error_reporting INTEGER DEFAULT 1,
-            update_server_url TEXT DEFAULT '',
+            update_server_url TEXT DEFAULT 'http://192.168.204.53:18900',
             updated_at TEXT DEFAULT (datetime('now'))
         );
         INSERT OR IGNORE INTO settings (id) VALUES (1);
@@ -91,8 +91,14 @@ pub fn init_db() {
         "ALTER TABLE settings ADD COLUMN mail_use_work_hours INTEGER DEFAULT 1",
     ];
     for sql in &migrations {
-        conn.execute_batch(sql).ok(); // ignore "duplicate column" errors
+        conn.execute_batch(sql).ok();
     }
+
+    // update_server_url이 비어있으면 기본값 설정
+    conn.execute(
+        "UPDATE settings SET update_server_url='http://192.168.204.53:18900' WHERE id=1 AND (update_server_url IS NULL OR update_server_url='')",
+        [],
+    ).ok();
 }
 
 pub fn get_settings() -> Settings {

@@ -1,6 +1,6 @@
 [package]
 name = "d-mate"
-version = "1.0.1"
+version = "1.0.2"
 description = "D-Mate — 다온플레이스 업무 도우미"
 authors = ["daonplace"]
 edition = "2021"
