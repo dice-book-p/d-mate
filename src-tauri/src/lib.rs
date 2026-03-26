@@ -144,6 +144,15 @@ pub fn run() {
             commands::hide_window,
             commands::quit_app,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running D-Mate");
+        .build(tauri::generate_context!())
+        .expect("error while building D-Mate")
+        .run(|app, event| {
+            if let tauri::RunEvent::Reopen { .. } = event {
+                if let Some(win) = app.get_webview_window("main") {
+                    let _ = win.show();
+                    let _ = win.unminimize();
+                    let _ = win.set_focus();
+                }
+            }
+        });
 }
