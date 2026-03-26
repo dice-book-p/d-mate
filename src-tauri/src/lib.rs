@@ -146,9 +146,10 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building D-Mate")
-        .run(|app, event| {
-            if let tauri::RunEvent::Reopen { .. } = event {
-                if let Some(win) = app.get_webview_window("main") {
+        .run(|_app, _event| {
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = _event {
+                if let Some(win) = _app.get_webview_window("main") {
                     let _ = win.show();
                     let _ = win.unminimize();
                     let _ = win.set_focus();
