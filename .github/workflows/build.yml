@@ -95,8 +95,13 @@ jobs:
       - name: Generate latest.json for Tauri updater
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          MAC_SIG=$(cat artifacts/D-Mate.app.tar.gz.sig 2>/dev/null || echo "")
-          WIN_SIG=$(cat artifacts/D-Mate_${VERSION}_x64-setup.exe.sig 2>/dev/null || echo "")
+          echo "=== All artifacts ==="
+          find artifacts -type f
+          echo "==="
+          MAC_SIG=$(find artifacts -name "D-Mate.app.tar.gz.sig" -exec cat {} \; 2>/dev/null || echo "")
+          WIN_SIG=$(find artifacts -name "*x64-setup.exe.sig" -exec cat {} \; 2>/dev/null || echo "")
+          echo "MAC_SIG length: ${#MAC_SIG}"
+          echo "WIN_SIG length: ${#WIN_SIG}"
 
           cat > artifacts/latest.json << ENDJSON
           {
