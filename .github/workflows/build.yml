@@ -90,7 +90,38 @@ jobs:
           path: artifacts
 
       - name: List artifacts
-        run: find artifacts -type f | head -20
+        run: find artifacts -type f | head -30
+
+      - name: Generate latest.json for Tauri updater
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          MAC_SIG=$(cat artifacts/D-Mate.app.tar.gz.sig 2>/dev/null || echo "")
+          WIN_SIG=$(cat artifacts/D-Mate_${VERSION}_x64-setup.exe.sig 2>/dev/null || echo "")
+
+          cat > artifacts/latest.json << ENDJSON
+          {
+            "version": "${VERSION}",
+            "notes": "D-Mate ${GITHUB_REF_NAME} 업데이트",
+            "pub_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "platforms": {
+              "darwin-aarch64": {
+                "url": "https://github.com/dice-book-p/d-mate/releases/download/${GITHUB_REF_NAME}/D-Mate.app.tar.gz",
+                "signature": "${MAC_SIG}"
+              },
+              "darwin-x86_64": {
+                "url": "https://github.com/dice-book-p/d-mate/releases/download/${GITHUB_REF_NAME}/D-Mate.app.tar.gz",
+                "signature": "${MAC_SIG}"
+              },
+              "windows-x86_64": {
+                "url": "https://github.com/dice-book-p/d-mate/releases/download/${GITHUB_REF_NAME}/D-Mate_${VERSION}_x64-setup.exe",
+                "signature": "${WIN_SIG}"
+              }
+            }
+          }
+          ENDJSON
+
+          echo "Generated latest.json:"
+          cat artifacts/latest.json
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
