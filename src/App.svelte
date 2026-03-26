@@ -5,8 +5,11 @@
   import ConfirmDialog from "./components/ConfirmDialog.svelte";
   import Confetti from "./components/Confetti.svelte";
   import Dashboard from "./pages/Dashboard.svelte";
-  import ServiceSwork from "./pages/ServiceSwork.svelte";
-  import ServiceMail from "./pages/ServiceMail.svelte";
+  import ConnectionManager from "./pages/ConnectionManager.svelte";
+  import WorkerAlerts from "./pages/WorkerAlerts.svelte";
+  import ManagerAlerts from "./pages/ManagerAlerts.svelte";
+  import MailAlerts from "./pages/MailAlerts.svelte";
+  import FeedbackPage from "./pages/FeedbackPage.svelte";
   import SystemPage from "./pages/SystemPage.svelte";
   import { currentPage, settings } from "./lib/stores.js";
   import { getSettings } from "./lib/api.js";
@@ -34,10 +37,16 @@
     <main class="main-content">
       {#if page === "dashboard"}
         <Dashboard />
-      {:else if page === "swork"}
-        <ServiceSwork />
-      {:else if page === "mail"}
-        <ServiceMail />
+      {:else if page === "connection"}
+        <ConnectionManager />
+      {:else if page === "worker_alerts"}
+        <WorkerAlerts />
+      {:else if page === "manager_alerts"}
+        <ManagerAlerts />
+      {:else if page === "mail_alerts"}
+        <MailAlerts />
+      {:else if page === "feedback"}
+        <FeedbackPage />
       {:else if page === "system"}
         <SystemPage />
       {/if}

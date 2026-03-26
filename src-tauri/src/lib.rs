@@ -2,9 +2,11 @@ pub mod alert_hub;
 mod checker;
 mod commands;
 mod database;
+mod desk_client;
 mod keyring_store;
 mod mail_checker;
 mod models;
+pub mod native_notify;
 mod notification_rules;
 mod scheduler;
 mod swork_client;
@@ -24,6 +26,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             // 이미 실행 중이면 기존 창을 포커스
             if let Some(win) = app.get_webview_window("main") {
@@ -37,6 +40,7 @@ pub fn run() {
         ))
         .setup(|app| {
             database::init_db();
+            native_notify::init(app.handle().clone());
             log::info!("D-Mate database initialized");
 
             // swork 클라이언트 초기화
@@ -141,6 +145,10 @@ pub fn run() {
             commands::check_update,
             commands::report_error,
             commands::reset_all_data,
+            commands::desk_join,
+            commands::desk_health,
+            commands::desk_submit_feedback,
+            commands::desk_get_feedback,
             commands::hide_window,
             commands::quit_app,
         ])

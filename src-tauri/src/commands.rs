@@ -1,7 +1,7 @@
 use serde_json::Value;
 use tauri::{AppHandle, Window};
 
-use crate::{alert_hub, database, keyring_store, models::*, scheduler, swork_client};
+use crate::{alert_hub, database, desk_client, keyring_store, models::*, scheduler, swork_client};
 
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -193,23 +193,30 @@ pub async fn get_dashboard_data() -> Result<DashboardData, String> {
     let recent_logs = database::get_recent_notifications(50);
     let username = keyring_store::get_swork_username();
 
-    let (rule1_tasks, rule2_tasks) = if !username.is_empty() && keyring_store::has_initial_setup() {
-        match swork_client::fetch_manager_tasks().await {
-            Ok(tasks) => {
-                alert_hub::swork_ok();
-                let r1 = crate::notification_rules::filter_rule1(&tasks, &username);
-                let r2 = crate::notification_rules::filter_rule2(&tasks, &username);
-                (r1, r2)
-            }
-            Err(_) => (vec![], vec![]),
+    let (mut my_overdue_tasks, mut my_deadline_tasks) = (vec![], vec![]);
+    let (mut approval_request_tasks, mut overdue_task_tasks) = (vec![], vec![]);
+
+    if !username.is_empty() && keyring_store::has_initial_setup() {
+        // worker tasks
+        if let Ok(tasks) = swork_client::fetch_worker_tasks().await {
+            alert_hub::swork_ok();
+            my_overdue_tasks = crate::notification_rules::filter_my_overdue(&tasks, &username);
+            my_deadline_tasks = crate::notification_rules::filter_my_deadline(&tasks, &username);
         }
-    } else {
-        (vec![], vec![])
-    };
+
+        // manager tasks
+        if let Ok(tasks) = swork_client::fetch_manager_tasks().await {
+            alert_hub::swork_ok();
+            approval_request_tasks = crate::notification_rules::filter_approval_request(&tasks, &username);
+            overdue_task_tasks = crate::notification_rules::filter_overdue_task(&tasks, &username);
+        }
+    }
 
     Ok(DashboardData {
-        rule1_tasks,
-        rule2_tasks,
+        my_overdue_tasks,
+        my_deadline_tasks,
+        approval_request_tasks,
+        overdue_task_tasks,
         recent_logs,
         error: String::new(),
         settings,
@@ -395,6 +402,44 @@ pub async fn report_error(error_message: String, context: String) -> Result<ApiR
             Ok(ApiResponse { ok: true, message: "에러 리포트 전송됨".into() })
         }
         _ => Ok(ApiResponse { ok: false, message: "전송 실패".into() }),
+    }
+}
+
+// ── Desk ──
+
+#[tauri::command]
+pub async fn desk_join(server_url: String, code: String, name: String, device_name: String) -> Result<ApiResponse, String> {
+    desk_client::init_client(&server_url).await;
+    match desk_client::join(&code, &name, &device_name).await {
+        Ok(true) => Ok(ApiResponse { ok: true, message: "Desk 연결 성공".into() }),
+        Ok(false) => Ok(ApiResponse { ok: false, message: "연결 실패".into() }),
+        Err(e) => Ok(ApiResponse { ok: false, message: e }),
+    }
+}
+
+#[tauri::command]
+pub async fn desk_health() -> Result<Value, String> {
+    let connected = desk_client::is_connected().await;
+    let reachable = desk_client::health().await.unwrap_or(false);
+    Ok(serde_json::json!({
+        "connected": connected,
+        "reachable": reachable,
+    }))
+}
+
+#[tauri::command]
+pub async fn desk_submit_feedback(category: String, title: String, body: String) -> Result<ApiResponse, String> {
+    match desk_client::submit_feedback(&category, &title, &body).await {
+        Ok(_) => Ok(ApiResponse { ok: true, message: "피드백이 전송되었습니다.".into() }),
+        Err(e) => Ok(ApiResponse { ok: false, message: e }),
+    }
+}
+
+#[tauri::command]
+pub async fn desk_get_feedback() -> Result<Value, String> {
+    match desk_client::get_my_feedback().await {
+        Ok(data) => Ok(data),
+        Err(e) => Ok(serde_json::json!({"error": e})),
     }
 }
 

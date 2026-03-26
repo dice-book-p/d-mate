@@ -60,6 +60,24 @@ export async function resetAllData() {
   return invoke("reset_all_data");
 }
 
+// ── Desk ──
+
+export async function deskJoin(serverUrl, code, name, deviceName) {
+  return invoke("desk_join", { serverUrl, code, name, deviceName });
+}
+
+export async function deskHealth() {
+  return invoke("desk_health");
+}
+
+export async function deskSubmitFeedback(category, title, body) {
+  return invoke("desk_submit_feedback", { category, title, body });
+}
+
+export async function deskGetFeedback() {
+  return invoke("desk_get_feedback");
+}
+
 export async function hideWindow() {
   return invoke("hide_window");
 }

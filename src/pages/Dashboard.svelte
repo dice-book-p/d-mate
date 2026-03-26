@@ -18,9 +18,7 @@
   function tryOvertimeCheck() {
     const lastShown = sessionStorage.getItem("overtime_shown");
     const now = Date.now();
-    // 1시간에 1번만
     if (lastShown && now - Number(lastShown) < 3600000) return;
-
     const msg = checkOvertime();
     if (msg) {
       setTimeout(() => showToast(msg, "info"), 1500);
@@ -66,6 +64,17 @@
       showToast("오류가 발생했습니다.", "error");
     }
   }
+
+  function ruleTypeLabel(rt) {
+    const map = {
+      approval_request: "승인요청",
+      overdue_task: "관리지연",
+      my_overdue: "내 지연",
+      my_deadline: "마감임박",
+      mail: "메일",
+    };
+    return map[rt] || rt;
+  }
 </script>
 
 <div class="page">
@@ -75,7 +84,7 @@
       <button class="btn btn-outline" onclick={doPause}>
         {paused ? "▶ 재개" : "⏸ 일시중지"}
       </button>
-      <button class="btn btn-primary" onclick={checkNow} title="SWORK/메일 알림을 즉시 확인하고 텔레그램으로 발송합니다">
+      <button class="btn btn-primary" onclick={checkNow} title="모든 알림을 즉시 확인합니다">
         📡 알림 발송
       </button>
       <button class="btn btn-outline" onclick={refresh} title="대시보드 데이터를 새로고침합니다">
@@ -112,29 +121,53 @@
     {/if}
 
     <div class="stats-grid">
-      <div class="stat-card stat-blue">
-        <div class="stat-value">{data.rule1_tasks?.length ?? 0}</div>
-        <div class="stat-label">승인/검수 요청</div>
+      <div class="stat-card stat-red">
+        <div class="stat-value">{data.my_overdue_tasks?.length ?? 0}</div>
+        <div class="stat-label">내 지연업무</div>
       </div>
       <div class="stat-card stat-orange">
-        <div class="stat-value">{data.rule2_tasks?.length ?? 0}</div>
-        <div class="stat-label">지연 업무</div>
+        <div class="stat-value">{data.my_deadline_tasks?.length ?? 0}</div>
+        <div class="stat-label">마감임박</div>
       </div>
-      <div class="stat-card stat-green">
-        <div class="stat-value">{data.recent_logs?.length ?? 0}</div>
-        <div class="stat-label">최근 알림</div>
+      <div class="stat-card stat-blue">
+        <div class="stat-value">{data.approval_request_tasks?.length ?? 0}</div>
+        <div class="stat-label">관리 요청</div>
       </div>
-      <div class="stat-card" class:stat-red={paused}>
-        <div class="stat-value">{paused ? "중지" : "활성"}</div>
-        <div class="stat-label">스케줄러 상태</div>
+      <div class="stat-card stat-purple">
+        <div class="stat-value">{data.overdue_task_tasks?.length ?? 0}</div>
+        <div class="stat-label">관리 지연</div>
       </div>
     </div>
 
     <div class="grid-2">
-      <Card title="📋 승인/검수 요청">
-        {#if data.rule1_tasks?.length > 0}
+      <Card title="👤 내 업무 현황">
+        {@const myTasks = [...(data.my_overdue_tasks || []), ...(data.my_deadline_tasks || [])]}
+        {#if myTasks.length > 0}
           <div class="task-list">
-            {#each data.rule1_tasks as t}
+            {#each myTasks as t}
+              <div class="task-row">
+                {#if t._days_overdue != null}
+                  <span class="badge badge-red">{t._days_overdue}일 초과</span>
+                {:else if t._days_left != null}
+                  <span class="badge badge-orange">{t._days_left === 0 ? "D-day" : "D-1"}</span>
+                {/if}
+                <div class="task-info">
+                  <strong>[{t.t_code}] {t.t_title}</strong>
+                  <small>{t.project_title} &middot; {t.t_status}</small>
+                  {#if t.t_due_date}<small>기한: {t.t_due_date}</small>{/if}
+                </div>
+              </div>
+            {/each}
+          </div>
+        {:else}
+          <p class="empty-state">지연 또는 마감임박 업무가 없습니다.</p>
+        {/if}
+      </Card>
+
+      <Card title="📋 승인/검수 요청">
+        {#if data.approval_request_tasks?.length > 0}
+          <div class="task-list">
+            {#each data.approval_request_tasks as t}
               <div class="task-row">
                 <span class="badge badge-blue">{t.t_status}</span>
                 <div class="task-info">
@@ -148,26 +181,24 @@
           <p class="empty-state">요청 대기 중인 업무가 없습니다.</p>
         {/if}
       </Card>
-
-      <Card title="⏰ 지연 업무">
-        {#if data.rule2_tasks?.length > 0}
-          <div class="task-list">
-            {#each data.rule2_tasks as t}
-              <div class="task-row">
-                <span class="badge badge-orange">{t._days_overdue ?? 0}일 초과</span>
-                <div class="task-info">
-                  <strong>[{t.t_code}] {t.t_title}</strong>
-                  <small>{t.project_title} &middot; {t.assignee_nickname} → {t.assigner_nickname}</small>
-                  <small>기한: {t.t_due_date ?? "-"} &middot; {t.t_status}</small>
-                </div>
-              </div>
-            {/each}
-          </div>
-        {:else}
-          <p class="empty-state">지연된 업무가 없습니다.</p>
-        {/if}
-      </Card>
     </div>
+
+    {#if data.overdue_task_tasks?.length > 0}
+      <Card title="⏰ 관리 지연 업무">
+        <div class="task-list">
+          {#each data.overdue_task_tasks as t}
+            <div class="task-row">
+              <span class="badge badge-orange">{t._days_overdue ?? 0}일 초과</span>
+              <div class="task-info">
+                <strong>[{t.t_code}] {t.t_title}</strong>
+                <small>{t.project_title} &middot; {t.assignee_nickname} → {t.assigner_nickname}</small>
+                <small>기한: {t.t_due_date ?? "-"} &middot; {t.t_status}</small>
+              </div>
+            </div>
+          {/each}
+        </div>
+      </Card>
+    {/if}
 
     <Card title="📜 최근 알림 로그">
       {#if data.recent_logs?.length > 0}
@@ -185,7 +216,7 @@
             <tbody>
               {#each data.recent_logs.slice(0, 20) as log}
                 <tr>
-                  <td><span class="badge badge-sm">{log.rule_type}</span></td>
+                  <td><span class="badge badge-sm">{ruleTypeLabel(log.rule_type)}</span></td>
                   <td class="mono">{log.task_code}</td>
                   <td class="ellipsis">{log.task_title}</td>
                   <td class="mono">{log.sent_at}</td>
@@ -275,8 +306,8 @@
   }
   .stat-blue .stat-value { color: var(--c-primary); }
   .stat-orange .stat-value { color: var(--c-warning); }
-  .stat-green .stat-value { color: var(--c-success); }
   .stat-red .stat-value { color: var(--c-danger); }
+  .stat-purple .stat-value { color: #7c3aed; }
 
   .grid-2 {
     display: grid;
@@ -326,6 +357,7 @@
   }
   .badge-blue { background: var(--c-primary-light); color: var(--c-primary); }
   .badge-orange { background: var(--c-warning-light); color: #92400e; }
+  .badge-red { background: #fee2e2; color: #991b1b; }
   .badge-sm { background: #f3f4f6; color: var(--c-text-secondary); }
 
   .empty-state {

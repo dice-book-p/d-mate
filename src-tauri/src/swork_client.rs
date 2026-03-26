@@ -63,15 +63,16 @@ impl SworkClient {
         }
     }
 
-    async fn fetch_manager_tasks(&mut self) -> Result<Vec<Task>, String> {
+    async fn fetch_tasks(&mut self, task_type: &str) -> Result<Vec<Task>, String> {
         if !self.logged_in {
             self.login().await?;
         }
 
-        log::info!("Fetching manager tasks...");
+        let url = format!("https://swork.kr/my-tasks/api/tasks?type={}", task_type);
+        log::info!("Fetching {} tasks...", task_type);
         let resp = self
             .client
-            .get("https://swork.kr/my-tasks/api/tasks?type=manager")
+            .get(&url)
             .send()
             .await
             .map_err(|e| e.to_string())?;
@@ -80,7 +81,7 @@ impl SworkClient {
             self.refresh().await?;
             let resp = self
                 .client
-                .get("https://swork.kr/my-tasks/api/tasks?type=manager")
+                .get(&url)
                 .send()
                 .await
                 .map_err(|e| e.to_string())?;
@@ -88,6 +89,14 @@ impl SworkClient {
         } else {
             Self::parse_tasks(resp).await
         }
+    }
+
+    async fn fetch_manager_tasks(&mut self) -> Result<Vec<Task>, String> {
+        self.fetch_tasks("manager").await
+    }
+
+    async fn fetch_worker_tasks(&mut self) -> Result<Vec<Task>, String> {
+        self.fetch_tasks("worker").await
     }
 
     async fn parse_tasks(resp: reqwest::Response) -> Result<Vec<Task>, String> {
@@ -130,6 +139,14 @@ pub async fn fetch_manager_tasks() -> Result<Vec<Task>, String> {
     let mut lock = CLIENT.lock().await;
     match lock.as_mut() {
         Some(client) => client.fetch_manager_tasks().await,
+        None => Err("swork 클라이언트가 초기화되지 않았습니다.".into()),
+    }
+}
+
+pub async fn fetch_worker_tasks() -> Result<Vec<Task>, String> {
+    let mut lock = CLIENT.lock().await;
+    match lock.as_mut() {
+        Some(client) => client.fetch_worker_tasks().await,
         None => Err("swork 클라이언트가 초기화되지 않았습니다.".into()),
     }
 }

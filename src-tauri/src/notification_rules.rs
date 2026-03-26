@@ -15,7 +15,113 @@ fn parse_date(s: &str) -> Option<NaiveDate> {
         .ok()
 }
 
-pub fn filter_rule1(tasks: &[Task], username: &str) -> Vec<Task> {
+// ── 내 업무: 내 지연업무 (my_overdue) ──
+
+pub fn filter_my_overdue(tasks: &[Task], username: &str) -> Vec<Task> {
+    let today = Local::now().date_naive();
+    tasks
+        .iter()
+        .filter_map(|t| {
+            if t.t_assignee != username {
+                return None;
+            }
+            let status_ok =
+                t.t_status == "업무승인" || t.t_status == "진행중" || t.t_status == "검수완료";
+            if !status_ok {
+                return None;
+            }
+            let due = t.t_due_date.as_deref().and_then(parse_date)?;
+            if due >= today {
+                return None;
+            }
+            let days = (today - due).num_days();
+            let mut task = t.clone();
+            task._days_overdue = Some(days);
+            Some(task)
+        })
+        .collect()
+}
+
+pub fn format_my_overdue_message(tasks: &[Task]) -> String {
+    if tasks.is_empty() {
+        return String::new();
+    }
+
+    let mut msg = String::from("<b>[내 업무] 지연 업무 알림</b>\n\n");
+
+    for t in tasks {
+        let overdue = t._days_overdue.unwrap_or(0);
+        let due_str = t.t_due_date.as_deref().unwrap_or("-");
+        msg.push_str(&format!(
+            "• <b>[{}]</b> {}\n  기한: {} (<b>{}일 초과</b>)\n  프로젝트: {}\n  상태: {}\n\n",
+            esc(&t.t_code),
+            esc(&t.t_title),
+            esc(due_str),
+            overdue,
+            esc(&t.project_title),
+            esc(&t.t_status),
+        ));
+    }
+
+    msg.push_str(&format!("총 {}건", tasks.len()));
+    msg
+}
+
+// ── 내 업무: 마감임박 (my_deadline) ──
+
+pub fn filter_my_deadline(tasks: &[Task], username: &str) -> Vec<Task> {
+    let today = Local::now().date_naive();
+    tasks
+        .iter()
+        .filter_map(|t| {
+            if t.t_assignee != username {
+                return None;
+            }
+            let status_ok = t.t_status == "업무승인" || t.t_status == "진행중";
+            if !status_ok {
+                return None;
+            }
+            let due = t.t_due_date.as_deref().and_then(parse_date)?;
+            let days_left = (due - today).num_days();
+            if days_left != 0 && days_left != 1 {
+                return None;
+            }
+            let mut task = t.clone();
+            task._days_left = Some(days_left); // 0=D-day, 1=D-1
+            Some(task)
+        })
+        .collect()
+}
+
+pub fn format_my_deadline_message(tasks: &[Task]) -> String {
+    if tasks.is_empty() {
+        return String::new();
+    }
+
+    let mut msg = String::from("<b>[내 업무] 마감 임박 알림</b>\n\n");
+
+    for t in tasks {
+        let days_left = t._days_left.unwrap_or(0);
+        let label = if days_left == 0 { "D-day!" } else { "D-1" };
+        let due_str = t.t_due_date.as_deref().unwrap_or("-");
+        msg.push_str(&format!(
+            "• <b>[{}]</b> {} (<b>{}</b>)\n  마감: {}\n  프로젝트: {}\n  상태: {}\n\n",
+            esc(&t.t_code),
+            esc(&t.t_title),
+            label,
+            esc(due_str),
+            esc(&t.project_title),
+            esc(&t.t_status),
+        ));
+    }
+
+    msg.push_str(&format!("총 {}건", tasks.len()));
+    msg
+}
+
+// ── 관리 업무: 승인요청 (approval_request, 기존 rule1) ──
+
+pub fn filter_approval_request(tasks: &[Task], username: &str) -> Vec<Task> {
     tasks
         .iter()
         .filter(|t| {
@@ -26,7 +132,32 @@ pub fn filter_rule1(tasks: &[Task], username: &str) -> Vec<Task> {
         .collect()
 }
 
-pub fn filter_rule2(tasks: &[Task], _username: &str) -> Vec<Task> {
+pub fn format_approval_request_message(tasks: &[Task]) -> String {
+    if tasks.is_empty() {
+        return String::new();
+    }
+
+    let mut msg = String::from("<b>[관리] 승인/검수 요청 알림</b>\n\n");
+
+    for t in tasks {
+        msg.push_str(&format!(
+            "• <b>[{}]</b> {}\n  프로젝트: {}\n  담당: {} → {}\n  상태: <b>{}</b>\n\n",
+            esc(&t.t_code),
+            esc(&t.t_title),
+            esc(&t.project_title),
+            esc(&t.assignee_nickname),
+            esc(&t.assigner_nickname),
+            esc(&t.t_status),
+        ));
+    }
+
+    msg.push_str(&format!("총 {}건", tasks.len()));
+    msg
+}
+
+// ── 관리 업무: 지연업무 (overdue_task, 기존 rule2) ──
+
+pub fn filter_overdue_task(tasks: &[Task], _username: &str) -> Vec<Task> {
     let today = Local::now().date_naive();
 
     tasks
@@ -51,47 +182,25 @@ pub fn filter_rule2(tasks: &[Task], _username: &str) -> Vec<Task> {
         .collect()
 }
 
-pub fn format_rule1_message(tasks: &[Task]) -> String {
+pub fn format_overdue_task_message(tasks: &[Task]) -> String {
     if tasks.is_empty() {
         return String::new();
     }
 
-    let mut msg = String::from("<b>📋 승인/검수 요청 알림</b>\n\n");
-
-    for t in tasks {
-        msg.push_str(&format!(
-            "• <b>[{}]</b> {}\n  프로젝트: {}\n  담당: {} → {}\n  상태: <b>{}</b>\n\n",
-            esc(&t.t_code),
-            esc(&t.t_title),
-            esc(&t.project_title),
-            esc(&t.assignee_nickname),
-            esc(&t.assigner_nickname),
-            esc(&t.t_status),
-        ));
-    }
-
-    msg.push_str(&format!("총 {}건", tasks.len()));
-    msg
-}
-
-pub fn format_rule2_message(tasks: &[Task]) -> String {
-    if tasks.is_empty() {
-        return String::new();
-    }
-
-    let mut msg = String::from("<b>⏰ 지연 업무 알림</b>\n\n");
+    let mut msg = String::from("<b>[관리] 지연 업무 알림</b>\n\n");
 
     for t in tasks {
         let overdue = t._days_overdue.unwrap_or(0);
         let due_str = t.t_due_date.as_deref().unwrap_or("-");
         msg.push_str(&format!(
-            "• <b>[{}]</b> {}\n  기한: {} (<b>{}일 초과</b>)\n  담당: {} → {}\n  상태: {}\n\n",
+            "• <b>[{}]</b> {}\n  기한: {} (<b>{}일 초과</b>)\n  담당: {} → {}\n  프로젝트: {}\n  상태: {}\n\n",
             esc(&t.t_code),
             esc(&t.t_title),
             esc(due_str),
             overdue,
             esc(&t.assignee_nickname),
             esc(&t.assigner_nickname),
+            esc(&t.project_title),
             esc(&t.t_status),
         ));
     }
@@ -99,6 +208,8 @@ pub fn format_rule2_message(tasks: &[Task]) -> String {
     msg.push_str(&format!("총 {}건", tasks.len()));
     msg
 }
+
+// ── 메일 ──
 
 pub fn format_mail_message(from: &str, subject: &str, date: &str) -> String {
     let date_line = if date.is_empty() {

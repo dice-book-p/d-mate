@@ -1,6 +1,6 @@
 [package]
 name = "d-mate"
-version = "1.0.6"
+version = "1.1.0"
 description = "D-Mate — 다온플레이스 업무 도우미"
 authors = ["daonplace"]
 edition = "2021"
@@ -31,3 +31,4 @@ dirs = "5"
 native-tls = "0.2"
 log = "0.4"
 env_logger = "0.11"
+tauri-plugin-notification = "2"

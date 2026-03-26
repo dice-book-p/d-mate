@@ -15,7 +15,6 @@
   alerts.subscribe((a) => {
     alertCount = a?.length || 0;
     alertSources = new Set((a || []).map(al => {
-      // source → nav id 매핑
       if (al.source?.startsWith("swork")) return "swork";
       if (al.source?.startsWith("mail")) return "mail";
       return "system";
@@ -24,8 +23,12 @@
 
   const nav = [
     { id: "dashboard", icon: "📊", label: "대시보드" },
-    { id: "swork", icon: "📋", label: "SWORK 알림" },
-    { id: "mail", icon: "📬", label: "메일 알림" },
+    { id: "connection", icon: "🔗", label: "연결 관리" },
+    { id: "worker_alerts", icon: "👤", label: "내 업무 알림", group: "swork" },
+    { id: "manager_alerts", icon: "📋", label: "관리 업무 알림", group: "swork" },
+    { id: "mail_alerts", icon: "📬", label: "메일 알림", group: "mail" },
+    { id: "message", icon: "💬", label: "메시지", disabled: true },
+    { id: "feedback", icon: "📝", label: "피드백", disabled: true },
     { id: "system", icon: "⚙️", label: "시스템" },
   ];
 
@@ -44,8 +47,9 @@
     }
   }
 
-  function go(id) {
-    navigateTo(id);
+  function go(item) {
+    if (item.disabled) return;
+    navigateTo(item.id);
   }
 </script>
 
@@ -69,12 +73,13 @@
       <button
         class="nav-item"
         class:active={page === item.id}
-        onclick={() => go(item.id)}
-        title={item.label}
+        class:disabled={item.disabled}
+        onclick={() => go(item)}
+        title={item.disabled ? `${item.label} (준비 중)` : item.label}
       >
         <span class="nav-icon">
           {item.icon}
-          {#if alertSources.has(item.id)}
+          {#if item.group && alertSources.has(item.group)}
             <span class="nav-alert-dot"></span>
           {/if}
         </span>
@@ -82,6 +87,9 @@
           <span class="nav-label">{item.label}</span>
           {#if item.id === "dashboard" && alertCount > 0}
             <span class="nav-badge">{alertCount}</span>
+          {/if}
+          {#if item.disabled}
+            <span class="nav-soon">준비 중</span>
           {/if}
         {/if}
       </button>
@@ -165,7 +173,7 @@
     width: 100%;
     text-align: left;
   }
-  .nav-item:hover {
+  .nav-item:hover:not(.disabled) {
     background: rgba(255, 255, 255, 0.08);
     color: #fff;
   }
@@ -173,11 +181,16 @@
     background: var(--c-sidebar-active);
     color: #fff;
   }
+  .nav-item.disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
   .nav-icon {
     font-size: 16px;
     width: 20px;
     text-align: center;
     flex-shrink: 0;
+    position: relative;
   }
   .nav-label {
     white-space: nowrap;
@@ -192,9 +205,6 @@
     border-radius: 50%;
     background: #ef4444;
   }
-  .nav-icon {
-    position: relative;
-  }
   .nav-badge {
     margin-left: auto;
     background: #ef4444;
@@ -205,6 +215,11 @@
     border-radius: 10px;
     min-width: 18px;
     text-align: center;
+  }
+  .nav-soon {
+    margin-left: auto;
+    font-size: 10px;
+    color: rgba(255, 255, 255, 0.3);
   }
 
   .sidebar-footer {
@@ -244,7 +259,8 @@
     }
     .logo-text,
     .nav-label,
-    .version {
+    .version,
+    .nav-soon {
       display: none;
     }
     .nav-item {

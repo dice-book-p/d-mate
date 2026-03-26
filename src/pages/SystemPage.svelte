@@ -19,7 +19,7 @@
 
   const DIRTY_FIELDS = [
     "work_hours_enabled", "work_start_time", "work_end_time", "work_days",
-    "error_reporting",
+    "error_reporting", "os_notification_enabled",
   ];
 
   const dirty = $derived(isDirty(original, s, DIRTY_FIELDS));
@@ -41,6 +41,7 @@
         work_end_time: s.work_end_time,
         work_days: s.work_days,
         error_reporting: s.error_reporting,
+        os_notification_enabled: s.os_notification_enabled,
       });
       const fresh = await getSettings();
       settings.set(fresh);
@@ -180,6 +181,11 @@
           label="PC 부팅 시 자동 시작"
           checked={s.autostart === 1}
           onchange={(v) => toggleAutostart(v)}
+        />
+        <Toggle
+          label="OS 알림 (macOS/Windows 알림센터)"
+          checked={s.os_notification_enabled === 1}
+          onchange={(v) => (s.os_notification_enabled = v ? 1 : 0)}
         />
         <Toggle
           label="익명 에러 리포팅"
