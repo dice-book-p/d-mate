@@ -5,12 +5,16 @@
   import { settings, showToast, pageDirty } from "../lib/stores.js";
   import { showDialog } from "../lib/dialog.js";
   import { isDirty, snapshot } from "../lib/dirty.js";
-  import { getSettings, saveSettings, setAutostart, checkUpdate, resetAllData, quitApp } from "../lib/api.js";
+  import { getSettings, saveSettings, setAutostart, resetAllData, quitApp } from "../lib/api.js";
+  import { check } from "@tauri-apps/plugin-updater";
+  import { relaunch } from "@tauri-apps/plugin-process";
 
   let s = $state({});
   let saving = $state(false);
   let checking = $state(false);
+  let downloading = $state(false);
   let updateInfo = $state(null);
+  let downloadProgress = $state(0);
   let original = $state({});
 
   const DIRTY_FIELDS = [
@@ -63,14 +67,54 @@
   async function doCheckUpdate() {
     checking = true;
     try {
-      updateInfo = await checkUpdate();
-      if (updateInfo.available) {
-        showToast(`새 버전 ${updateInfo.latest} 사용 가능!`, "info");
+      const update = await check();
+      if (update) {
+        updateInfo = { available: true, latest: update.version, notes: update.body || "", _update: update };
+        showToast(`새 버전 v${update.version} 사용 가능!`, "info");
       } else {
+        updateInfo = { available: false };
         showToast("최신 버전입니다.", "success");
       }
-    } catch (e) { showToast("업데이트 확인 실패", "error"); }
+    } catch (e) {
+      console.error("Update check error:", e);
+      showToast("업데이트 확인 실패", "error");
+    }
     checking = false;
+  }
+
+  async function doDownloadUpdate() {
+    if (!updateInfo?._update) return;
+    downloading = true;
+    downloadProgress = 0;
+    try {
+      let totalLen = 0;
+      let downloaded = 0;
+      await updateInfo._update.downloadAndInstall((event) => {
+        if (event.event === "Started") {
+          totalLen = event.data.contentLength || 0;
+        } else if (event.event === "Progress") {
+          downloaded += event.data.chunkLength;
+          downloadProgress = totalLen > 0 ? Math.round((downloaded / totalLen) * 100) : 0;
+        } else if (event.event === "Finished") {
+          downloadProgress = 100;
+        }
+      });
+
+      // 다운로드 + 설치 완료 → 재시작 물어보기
+      downloading = false;
+      showDialog({
+        type: "info",
+        title: "업데이트 준비 완료",
+        message: `v${updateInfo.latest} 업데이트가 설치되었습니다.\n지금 재시작하시겠습니까?\n\n나중에 앱을 재시작해도 자동 적용됩니다.`,
+        confirmText: "지금 재시작",
+        async onConfirm() {
+          await relaunch();
+        },
+      });
+    } catch (e) {
+      downloading = false;
+      showToast("업데이트 다운로드 실패: " + e, "error");
+    }
   }
 
   function doReset() {
@@ -162,10 +206,15 @@
                 <span class="update-notes">— {updateInfo.notes}</span>
               {/if}
             </div>
-            {#if updateInfo.download_url}
-              <a class="btn btn-primary btn-sm mt-8" href={updateInfo.download_url} target="_blank" rel="noopener">
-                다운로드
-              </a>
+            {#if downloading}
+              <div class="progress-bar mt-8">
+                <div class="progress-fill" style="width: {downloadProgress}%"></div>
+              </div>
+              <span class="progress-text">{downloadProgress}% 다운로드 중...</span>
+            {:else}
+              <button class="btn btn-primary btn-sm mt-8" onclick={doDownloadUpdate}>
+                업데이트 설치
+              </button>
             {/if}
           </div>
         {/if}
@@ -226,6 +275,14 @@
     border-radius: var(--radius-sm); font-size: 12px;
   }
   .update-notes { opacity: 0.7; }
+  .progress-bar {
+    height: 6px; background: #e5e7eb; border-radius: 3px; overflow: hidden;
+  }
+  .progress-fill {
+    height: 100%; background: var(--c-primary); border-radius: 3px;
+    transition: width 0.3s;
+  }
+  .progress-text { font-size: 11px; color: var(--c-text-secondary); margin-top: 4px; display: block; }
 
   .danger-zone {
     display: flex;
