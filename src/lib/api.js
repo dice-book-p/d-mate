@@ -70,12 +70,66 @@ export async function deskHealth() {
   return invoke("desk_health");
 }
 
+export async function deskDisconnect() {
+  return invoke("desk_disconnect");
+}
+
 export async function deskSubmitFeedback(category, title, body) {
   return invoke("desk_submit_feedback", { category, title, body });
 }
 
 export async function deskGetFeedback() {
   return invoke("desk_get_feedback");
+}
+
+// ── Messages / MQTT ──
+
+export async function getMessages(conversationId = null, limit = 50) {
+  return invoke("get_messages", { conversationId, limit });
+}
+
+export async function markMessageRead(id) {
+  return invoke("mark_message_read", { id });
+}
+
+export async function getUnreadCount() {
+  return invoke("get_unread_count");
+}
+
+export async function getContacts() {
+  return invoke("get_contacts");
+}
+
+// ── E2E 암호화 ──
+
+export async function initEncryption() {
+  return invoke("init_encryption");
+}
+
+// ── DM ──
+
+export async function sendDm(targetCode, body) {
+  return invoke("send_dm", { targetCode, body });
+}
+
+export async function getConversations() {
+  return invoke("get_conversations");
+}
+
+export async function getConversationMessages(convId) {
+  return invoke("get_conversation_messages", { convId });
+}
+
+export async function dmDelivered(msgId) {
+  return invoke("dm_delivered", { msgId });
+}
+
+export async function dmRead(msgId) {
+  return invoke("dm_read", { msgId });
+}
+
+export async function getMqttStatus() {
+  return invoke("mqtt_status");
 }
 
 export async function hideWindow() {

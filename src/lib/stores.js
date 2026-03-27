@@ -7,6 +7,8 @@ export const loading = writable(false);
 export const alerts = writable([]);
 export const toastMessage = writable(null);
 export const pageDirty = writable(false);
+export const unreadCount = writable(0);
+export const chatParams = writable({});
 
 export function showToast(message, type = "info") {
   toastMessage.set({ message, type });

@@ -1,11 +1,13 @@
 pub mod alert_hub;
 mod checker;
 mod commands;
+mod crypto;
 mod database;
 mod desk_client;
 mod keyring_store;
 mod mail_checker;
 mod models;
+pub mod mqtt_client;
 pub mod native_notify;
 mod notification_rules;
 mod scheduler;
@@ -17,6 +19,22 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Manager, WindowEvent,
 };
+
+/// Extract hostname from a URL (e.g., "http://192.168.1.1:3000" -> "192.168.1.1")
+fn extract_mqtt_host(url: &str) -> String {
+    let without_scheme = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url);
+    without_scheme
+        .split(':')
+        .next()
+        .unwrap_or(without_scheme)
+        .split('/')
+        .next()
+        .unwrap_or(without_scheme)
+        .to_string()
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -54,6 +72,36 @@ pub fn run() {
                 });
             }
 
+            // MQTT 핸들 초기화
+            {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    mqtt_client::init(handle).await;
+                });
+            }
+
+            // Desk 클라이언트 자동 복원 + MQTT 연결 + E2E 키 초기화
+            tauri::async_runtime::spawn(async {
+                let restored = desk_client::restore_connection().await;
+                if restored {
+                    // Desk 복원 성공 시 MQTT도 연결 시도
+                    if let Some(server_url) = desk_client::get_server_url().await {
+                        if let Some(code) = database::get_desk_config("member_code") {
+                            let host = extract_mqtt_host(&server_url);
+                            mqtt_client::connect(&host, 1883, &code, &code, &code).await.ok();
+                        }
+                    }
+                    // E2E 암호화 키 초기화 + 공개키 업로드
+                    if !database::has_keypair() {
+                        let (private_key, public_key) = crypto::generate_keypair();
+                        database::save_keypair(&private_key, &public_key);
+                    }
+                    if let Some((_, pub_key)) = database::get_keypair() {
+                        desk_client::upload_public_key(&pub_key).await.ok();
+                    }
+                }
+            });
+
             // 스케줄러 시작
             if keyring_store::has_initial_setup() {
                 tauri::async_runtime::spawn(async {
@@ -61,20 +109,32 @@ pub fn run() {
                 });
             }
 
-            // 트레이: alert_hub 연동 — 경고 수를 tooltip에 표시
+            // 트레이: alert_hub + 미읽 메시지 수를 tooltip에 표시
             let alert_count = alert_hub::count();
-            let tooltip = if alert_count > 0 {
+            let unread_msg_count = database::get_unread_count();
+            let tooltip = if unread_msg_count > 0 && alert_count > 0 {
+                format!("D-Mate — 📬 {}건의 새 메시지, ⚠ {}건의 문제", unread_msg_count, alert_count)
+            } else if unread_msg_count > 0 {
+                format!("D-Mate — 📬 {}건의 새 메시지", unread_msg_count)
+            } else if alert_count > 0 {
                 format!("D-Mate — ⚠ {}건의 문제", alert_count)
             } else {
                 "D-Mate — 업무 도우미".to_string()
             };
 
+            let unread_label = if unread_msg_count > 0 {
+                format!("새 메시지: {}건", unread_msg_count)
+            } else {
+                "새 메시지 없음".to_string()
+            };
+
             let open_i = MenuItem::with_id(app, "open", "설정 열기", true, None::<&str>)?;
+            let msg_i = MenuItem::with_id(app, "msg_info", &unread_label, false, None::<&str>)?;
             let check_i = MenuItem::with_id(app, "check", "지금 확인", true, None::<&str>)?;
             let pause_i = MenuItem::with_id(app, "pause", "일시 중지", true, None::<&str>)?;
             let quit_i = MenuItem::with_id(app, "quit", "종료", true, None::<&str>)?;
 
-            let menu = Menu::with_items(app, &[&open_i, &check_i, &pause_i, &quit_i])?;
+            let menu = Menu::with_items(app, &[&open_i, &msg_i, &check_i, &pause_i, &quit_i])?;
 
             let _tray = TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
@@ -147,8 +207,20 @@ pub fn run() {
             commands::reset_all_data,
             commands::desk_join,
             commands::desk_health,
+            commands::desk_disconnect,
             commands::desk_submit_feedback,
             commands::desk_get_feedback,
+            commands::get_messages,
+            commands::mark_message_read,
+            commands::get_unread_count,
+            commands::get_contacts,
+            commands::send_dm,
+            commands::get_conversations,
+            commands::get_conversation_messages,
+            commands::dm_delivered,
+            commands::dm_read,
+            commands::init_encryption,
+            commands::mqtt_status,
             commands::hide_window,
             commands::quit_app,
         ])

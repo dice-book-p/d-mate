@@ -32,3 +32,8 @@ native-tls = "0.2"
 log = "0.4"
 env_logger = "0.11"
 tauri-plugin-notification = "2"
+rumqttc = "0.24"
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+aes-gcm = "0.10"
+rand = "0.8"
+base64 = "0.22"

@@ -1,4 +1,5 @@
 <script>
+  import { onMount } from "svelte";
   import Card from "../components/Card.svelte";
   import ConnBadge from "../components/ConnBadge.svelte";
   import Tooltip from "../components/Tooltip.svelte";
@@ -6,7 +7,7 @@
   import { showDialog } from "../lib/dialog.js";
   import {
     getSettings, saveSettings, verifySworkLogin, verifyMailLogin,
-    testTelegram, lookupTelegramChats, disconnectService, deskJoin, deskHealth,
+    testTelegram, lookupTelegramChats, disconnectService, deskJoin, deskHealth, deskDisconnect,
   } from "../lib/api.js";
 
   let activeTab = $state("swork");
@@ -48,6 +49,20 @@
   let testingMailTg = $state(false);
   let lookingUpMail = $state(false);
   let mailSaved = $state(false);
+
+  onMount(async () => {
+    try {
+      const r = await deskHealth();
+      deskReachable = r.reachable;
+      deskConnected = r.connected;
+      deskChecked = true;
+      if (r.connected && r.server_url) {
+        deskServerUrl = r.server_url;
+      }
+    } catch (_) {
+      deskChecked = true;
+    }
+  });
 
   settings.subscribe((v) => {
     if (v && Object.keys(v).length) {
@@ -277,7 +292,7 @@
     </button>
     <button class="tab" class:active={activeTab === "desk"} onclick={() => activeTab = "desk"}>
       Desk
-      <span class="tab-dot gray"></span>
+      <span class="tab-dot" class:green={deskConnected && deskReachable} class:red={deskConnected && !deskReachable} class:gray={!deskConnected}></span>
     </button>
   </div>
 
@@ -439,7 +454,14 @@
             <div class="info-item"><span class="info-label">서버</span><strong>{deskServerUrl}</strong></div>
             <div class="btn-row mt-12">
               <button class="btn btn-outline btn-sm" onclick={checkDeskHealth}>상태 확인</button>
-              <button class="btn btn-ghost-sm danger-text" onclick={() => { deskConnected = false; deskServerUrl = ""; }}>연결 해제</button>
+              <button class="btn btn-ghost-sm danger-text" onclick={() => {
+                showDialog({ type: "danger", title: "Desk 연결 해제", message: "Desk 서버와의 연결을 해제합니다.\n저장된 인증 정보가 삭제됩니다.", confirmText: "해제",
+                  async onConfirm() {
+                    try { await deskDisconnect(); deskConnected = false; deskReachable = false; deskServerUrl = ""; deskCode = ""; deskName = ""; deskDeviceName = ""; showToast("Desk 연결이 해제되었습니다.", "info"); }
+                    catch (e) { showToast("해제 실패", "error"); }
+                  },
+                });
+              }}>연결 해제</button>
             </div>
           </div>
         {:else}

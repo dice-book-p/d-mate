@@ -9,10 +9,12 @@
   import WorkerAlerts from "./pages/WorkerAlerts.svelte";
   import ManagerAlerts from "./pages/ManagerAlerts.svelte";
   import MailAlerts from "./pages/MailAlerts.svelte";
+  import MessagePage from "./pages/MessagePage.svelte";
+  import ChatPage from "./pages/ChatPage.svelte";
   import FeedbackPage from "./pages/FeedbackPage.svelte";
   import SystemPage from "./pages/SystemPage.svelte";
-  import { currentPage, settings } from "./lib/stores.js";
-  import { getSettings } from "./lib/api.js";
+  import { currentPage, settings, unreadCount } from "./lib/stores.js";
+  import { getSettings, getUnreadCount } from "./lib/api.js";
   import { onMount } from "svelte";
 
   let page = $state("");
@@ -27,6 +29,11 @@
     } catch (e) {
       console.error("Failed to load settings:", e);
     }
+    // 미읽 메시지 수 로드
+    try {
+      const r = await getUnreadCount();
+      unreadCount.set(r.count || 0);
+    } catch (e) { /* ignore */ }
     loaded = true;
   });
 </script>
@@ -45,6 +52,10 @@
         <ManagerAlerts />
       {:else if page === "mail_alerts"}
         <MailAlerts />
+      {:else if page === "message"}
+        <MessagePage />
+      {:else if page === "chat"}
+        <ChatPage />
       {:else if page === "feedback"}
         <FeedbackPage />
       {:else if page === "system"}

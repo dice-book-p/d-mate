@@ -1,6 +1,6 @@
 use chrono::Local;
 
-use crate::{alert_hub, database, keyring_store, mail_checker, native_notify, notification_rules, swork_client, telegram};
+use crate::{alert_hub, database, desk_client, keyring_store, mail_checker, native_notify, notification_rules, swork_client, telegram};
 use crate::models::Settings;
 
 fn is_global_work_hours(settings: &Settings) -> bool {
@@ -81,6 +81,7 @@ pub async fn check_my_overdue() {
             log::error!("my_overdue fetch error: {}", e);
             if is_auth_error(&e) { alert_hub::swork_auth_error(&e); }
             else { alert_hub::swork_server_error(&e); }
+            desk_client::report_error("swork_my_overdue", &e).await;
             return;
         }
     };
@@ -147,6 +148,7 @@ pub async fn check_my_deadline() {
             log::error!("my_deadline fetch error: {}", e);
             if is_auth_error(&e) { alert_hub::swork_auth_error(&e); }
             else { alert_hub::swork_server_error(&e); }
+            desk_client::report_error("swork_my_deadline", &e).await;
             return;
         }
     };
@@ -217,6 +219,7 @@ pub async fn check_approval_request() {
             log::error!("approval_request fetch error: {}", e);
             if is_auth_error(&e) { alert_hub::swork_auth_error(&e); }
             else { alert_hub::swork_server_error(&e); }
+            desk_client::report_error("swork_approval_request", &e).await;
             return;
         }
     };
@@ -279,6 +282,7 @@ pub async fn check_overdue_task(slot_key: &str) {
             log::error!("overdue_task fetch error: {}", e);
             if is_auth_error(&e) { alert_hub::swork_auth_error(&e); }
             else { alert_hub::swork_server_error(&e); }
+            desk_client::report_error("swork_overdue_task", &e).await;
             return;
         }
     };
@@ -346,6 +350,7 @@ pub async fn check_mail() {
             log::error!("Mail check error: {}", e);
             if is_auth_error(&e) { alert_hub::mail_auth_error(&e); }
             else { alert_hub::mail_server_error(&e); }
+            desk_client::report_error("mail_check", &e).await;
             return;
         }
     };

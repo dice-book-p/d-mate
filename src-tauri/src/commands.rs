@@ -1,7 +1,7 @@
 use serde_json::Value;
 use tauri::{AppHandle, Window};
 
-use crate::{alert_hub, database, desk_client, keyring_store, models::*, scheduler, swork_client};
+use crate::{alert_hub, crypto, database, desk_client, keyring_store, models::*, mqtt_client, scheduler, swork_client};
 
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -421,10 +421,18 @@ pub async fn desk_join(server_url: String, code: String, name: String, device_na
 pub async fn desk_health() -> Result<Value, String> {
     let connected = desk_client::is_connected().await;
     let reachable = desk_client::health().await.unwrap_or(false);
+    let server_url = desk_client::get_server_url().await.unwrap_or_default();
     Ok(serde_json::json!({
         "connected": connected,
         "reachable": reachable,
+        "server_url": server_url,
     }))
+}
+
+#[tauri::command]
+pub async fn desk_disconnect() -> Result<ApiResponse, String> {
+    desk_client::disconnect().await;
+    Ok(ApiResponse { ok: true, message: "Desk 연결이 해제되었습니다.".into() })
 }
 
 #[tauri::command]
@@ -441,6 +449,119 @@ pub async fn desk_get_feedback() -> Result<Value, String> {
         Ok(data) => Ok(data),
         Err(e) => Ok(serde_json::json!({"error": e})),
     }
+}
+
+// ── Messages / MQTT ──
+
+#[tauri::command]
+pub async fn get_messages(conversation_id: Option<String>, limit: Option<i32>) -> Result<Value, String> {
+    let lim = limit.unwrap_or(50);
+    let messages = match conversation_id {
+        Some(cid) if !cid.is_empty() => database::get_local_messages(&cid, lim),
+        _ => database::get_all_local_messages(lim),
+    };
+    Ok(serde_json::json!(messages))
+}
+
+#[tauri::command]
+pub async fn mark_message_read(id: String) -> Result<ApiResponse, String> {
+    database::mark_message_read(&id);
+    Ok(ApiResponse { ok: true, message: "읽음 처리 완료".into() })
+}
+
+#[tauri::command]
+pub async fn get_unread_count() -> Result<Value, String> {
+    let count = database::get_unread_count();
+    Ok(serde_json::json!({"count": count}))
+}
+
+#[tauri::command]
+pub async fn get_contacts() -> Result<Value, String> {
+    if !desk_client::is_connected().await {
+        return Ok(serde_json::json!({"error": "Desk 미연결"}));
+    }
+    match desk_client::get_contacts_list().await {
+        Ok(data) => Ok(data),
+        Err(e) => Ok(serde_json::json!({"error": e})),
+    }
+}
+
+#[tauri::command]
+pub async fn send_dm(target_code: String, body: String) -> Result<ApiResponse, String> {
+    // 1. 상대방 공개키 조회 시도
+    match desk_client::get_public_key(&target_code).await {
+        Ok(target_pubkey) => {
+            // 2. 메시지 암호화
+            let (ciphertext, ephemeral_key, nonce) = crypto::encrypt_message(&target_pubkey, &body)
+                .map_err(|e| format!("암호화 실패: {}", e))?;
+            // 3. 암호문 전송
+            match desk_client::send_dm_encrypted(&target_code, &ciphertext, &ephemeral_key, &nonce).await {
+                Ok(_) => Ok(ApiResponse { ok: true, message: "전송 완료".into() }),
+                Err(e) => Ok(ApiResponse { ok: false, message: e }),
+            }
+        }
+        Err(_) => {
+            // 공개키 없으면 평문 전송 (하위 호환)
+            match desk_client::send_dm(&target_code, &body).await {
+                Ok(_) => Ok(ApiResponse { ok: true, message: "전송 완료".into() }),
+                Err(e) => Ok(ApiResponse { ok: false, message: e }),
+            }
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn init_encryption() -> Result<ApiResponse, String> {
+    // 키 쌍이 없으면 생성
+    if !database::has_keypair() {
+        let (private_key, public_key) = crypto::generate_keypair();
+        database::save_keypair(&private_key, &public_key);
+    }
+    // Desk 연결 중이면 공개키 업로드
+    let (_, pub_key) = database::get_keypair().ok_or("키 없음")?;
+    if desk_client::is_connected().await {
+        desk_client::upload_public_key(&pub_key).await?;
+    }
+    Ok(ApiResponse { ok: true, message: "암호화 키 초기화 완료".into() })
+}
+
+#[tauri::command]
+pub async fn get_conversations() -> Result<Value, String> {
+    match desk_client::get_conversations().await {
+        Ok(data) => Ok(data),
+        Err(e) => Ok(serde_json::json!({"error": e})),
+    }
+}
+
+#[tauri::command]
+pub async fn get_conversation_messages(conv_id: String) -> Result<Value, String> {
+    match desk_client::get_conversation_messages(&conv_id).await {
+        Ok(data) => Ok(data),
+        Err(e) => Ok(serde_json::json!({"error": e})),
+    }
+}
+
+#[tauri::command]
+pub async fn dm_delivered(msg_id: String) -> Result<ApiResponse, String> {
+    match desk_client::dm_delivered(&msg_id).await {
+        Ok(_) => Ok(ApiResponse { ok: true, message: "전달 확인".into() }),
+        Err(e) => Ok(ApiResponse { ok: false, message: e }),
+    }
+}
+
+#[tauri::command]
+pub async fn dm_read(msg_id: String) -> Result<ApiResponse, String> {
+    match desk_client::dm_read(&msg_id).await {
+        Ok(_) => Ok(ApiResponse { ok: true, message: "읽음 확인".into() }),
+        Err(e) => Ok(ApiResponse { ok: false, message: e }),
+    }
+}
+
+#[tauri::command]
+pub async fn mqtt_status() -> Result<Value, String> {
+    Ok(serde_json::json!({
+        "connected": mqtt_client::is_connected(),
+    }))
 }
 
 #[tauri::command]

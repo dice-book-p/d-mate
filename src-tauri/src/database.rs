@@ -87,7 +87,41 @@ pub fn init_db() {
             success INTEGER DEFAULT 1
         );
         CREATE INDEX IF NOT EXISTS idx_notif_dedup
-            ON notification_log(rule_type, task_code, slot_key);",
+            ON notification_log(rule_type, task_code, slot_key);
+
+        CREATE TABLE IF NOT EXISTS desk_config (
+            key   TEXT PRIMARY KEY,
+            value TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS local_messages (
+            id              TEXT PRIMARY KEY,
+            conversation_id TEXT,
+            type            TEXT,
+            sender_code     TEXT,
+            sender_name     TEXT,
+            title           TEXT,
+            body            TEXT,
+            is_read         INTEGER DEFAULT 0,
+            created_at      TEXT,
+            received_at     TEXT DEFAULT (datetime('now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS encryption_keys (
+            id          INTEGER PRIMARY KEY,
+            private_key BLOB NOT NULL,
+            public_key  TEXT NOT NULL,
+            created_at  TEXT DEFAULT (datetime('now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS local_outbox (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            target_code     TEXT NOT NULL,
+            encrypted_body  TEXT NOT NULL,
+            ephemeral_key   TEXT NOT NULL,
+            nonce           TEXT NOT NULL,
+            created_at      TEXT DEFAULT (datetime('now'))
+        );",
     )
     .expect("Failed to create tables");
 
@@ -333,10 +367,154 @@ pub fn get_recent_notifications(limit: i32) -> Vec<NotificationLog> {
     .collect()
 }
 
+// ── desk_config CRUD ──
+
+pub fn get_desk_config(key: &str) -> Option<String> {
+    let conn = DB.lock().unwrap();
+    conn.query_row(
+        "SELECT value FROM desk_config WHERE key=?",
+        params![key],
+        |row| row.get(0),
+    )
+    .ok()
+}
+
+pub fn set_desk_config(key: &str, value: &str) {
+    let conn = DB.lock().unwrap();
+    conn.execute(
+        "INSERT OR REPLACE INTO desk_config (key, value) VALUES (?, ?)",
+        params![key, value],
+    )
+    .ok();
+}
+
+#[allow(dead_code)]
+pub fn delete_desk_config(key: &str) {
+    let conn = DB.lock().unwrap();
+    conn.execute("DELETE FROM desk_config WHERE key=?", params![key]).ok();
+}
+
+pub fn clear_desk_config() {
+    let conn = DB.lock().unwrap();
+    conn.execute_batch("DELETE FROM desk_config;").ok();
+}
+
+// ── local_messages CRUD ──
+
+pub fn save_local_message(
+    id: &str, conversation_id: &str, msg_type: &str,
+    sender_code: &str, sender_name: &str, title: &str, body: &str, created_at: &str,
+) {
+    let conn = DB.lock().unwrap();
+    conn.execute(
+        "INSERT OR REPLACE INTO local_messages (id, conversation_id, type, sender_code, sender_name, title, body, created_at)
+         VALUES (?,?,?,?,?,?,?,?)",
+        params![id, conversation_id, msg_type, sender_code, sender_name, title, body, created_at],
+    ).ok();
+}
+
+pub fn get_local_messages(conversation_id: &str, limit: i32) -> Vec<serde_json::Value> {
+    let conn = DB.lock().unwrap();
+    let mut stmt = conn.prepare(
+        "SELECT id, conversation_id, type, sender_code, sender_name, title, body, is_read, created_at, received_at
+         FROM local_messages WHERE conversation_id=? ORDER BY created_at DESC LIMIT ?"
+    ).unwrap();
+    stmt.query_map(params![conversation_id, limit], |row| {
+        Ok(serde_json::json!({
+            "id": row.get::<_, String>(0)?,
+            "conversation_id": row.get::<_, String>(1)?,
+            "type": row.get::<_, String>(2)?,
+            "sender_code": row.get::<_, String>(3)?,
+            "sender_name": row.get::<_, String>(4)?,
+            "title": row.get::<_, String>(5)?,
+            "body": row.get::<_, String>(6)?,
+            "is_read": row.get::<_, i32>(7)?,
+            "created_at": row.get::<_, String>(8)?,
+            "received_at": row.get::<_, String>(9)?,
+        }))
+    }).unwrap().filter_map(|r| r.ok()).collect()
+}
+
+pub fn get_all_local_messages(limit: i32) -> Vec<serde_json::Value> {
+    let conn = DB.lock().unwrap();
+    let mut stmt = conn.prepare(
+        "SELECT id, conversation_id, type, sender_code, sender_name, title, body, is_read, created_at, received_at
+         FROM local_messages ORDER BY created_at DESC LIMIT ?"
+    ).unwrap();
+    stmt.query_map(params![limit], |row| {
+        Ok(serde_json::json!({
+            "id": row.get::<_, String>(0)?,
+            "conversation_id": row.get::<_, String>(1)?,
+            "type": row.get::<_, String>(2)?,
+            "sender_code": row.get::<_, String>(3)?,
+            "sender_name": row.get::<_, String>(4)?,
+            "title": row.get::<_, String>(5)?,
+            "body": row.get::<_, String>(6)?,
+            "is_read": row.get::<_, i32>(7)?,
+            "created_at": row.get::<_, String>(8)?,
+            "received_at": row.get::<_, String>(9)?,
+        }))
+    }).unwrap().filter_map(|r| r.ok()).collect()
+}
+
+pub fn mark_message_read(id: &str) {
+    let conn = DB.lock().unwrap();
+    conn.execute(
+        "UPDATE local_messages SET is_read=1 WHERE id=?",
+        params![id],
+    ).ok();
+}
+
+pub fn get_unread_count() -> i32 {
+    let conn = DB.lock().unwrap();
+    conn.query_row(
+        "SELECT COUNT(*) FROM local_messages WHERE is_read=0",
+        [],
+        |row| row.get(0),
+    ).unwrap_or(0)
+}
+
+// ── encryption_keys CRUD ──
+
+pub fn save_keypair(private_key: &[u8], public_key: &str) {
+    let conn = DB.lock().unwrap();
+    conn.execute("DELETE FROM encryption_keys", []).ok();
+    conn.execute(
+        "INSERT INTO encryption_keys (id, private_key, public_key) VALUES (1, ?, ?)",
+        params![private_key, public_key],
+    ).ok();
+}
+
+pub fn get_keypair() -> Option<(Vec<u8>, String)> {
+    let conn = DB.lock().unwrap();
+    conn.query_row(
+        "SELECT private_key, public_key FROM encryption_keys WHERE id=1",
+        [],
+        |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, String>(1)?)),
+    ).ok()
+}
+
+pub fn has_keypair() -> bool {
+    get_keypair().is_some()
+}
+
+pub fn clear_local_messages() {
+    let conn = DB.lock().unwrap();
+    conn.execute_batch(
+        "DELETE FROM local_messages;
+         DELETE FROM local_outbox;",
+    )
+    .ok();
+}
+
 pub fn clear_all_data() {
     let conn = DB.lock().unwrap();
     conn.execute_batch(
         "DELETE FROM notification_log;
+         DELETE FROM desk_config;
+         DELETE FROM local_messages;
+         DELETE FROM local_outbox;
+         DELETE FROM encryption_keys;
          DELETE FROM settings;
          INSERT OR IGNORE INTO settings (id) VALUES (1);",
     )

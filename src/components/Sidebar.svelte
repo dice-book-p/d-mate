@@ -1,5 +1,5 @@
 <script>
-  import { currentPage, settings, alerts, navigateTo, showToast } from "../lib/stores.js";
+  import { currentPage, settings, alerts, navigateTo, showToast, unreadCount } from "../lib/stores.js";
   import { triggerConfetti } from "../lib/easter.js";
 
   let page = $state("");
@@ -7,6 +7,9 @@
   let appVersion = $state("");
   let alertCount = $state(0);
   let alertSources = $state(new Set());
+  let msgUnread = $state(0);
+
+  unreadCount.subscribe((c) => (msgUnread = c));
 
   currentPage.subscribe((v) => (page = v));
   settings.subscribe((s) => {
@@ -23,12 +26,12 @@
 
   const nav = [
     { id: "dashboard", icon: "📊", label: "대시보드" },
-    { id: "connection", icon: "🔗", label: "연결 관리" },
     { id: "worker_alerts", icon: "👤", label: "내 업무 알림", group: "swork" },
     { id: "manager_alerts", icon: "📋", label: "관리 업무 알림", group: "swork" },
     { id: "mail_alerts", icon: "📬", label: "메일 알림", group: "mail" },
-    { id: "message", icon: "💬", label: "메시지", disabled: true },
-    { id: "feedback", icon: "📝", label: "피드백", disabled: true },
+    { id: "message", icon: "💬", label: "메시지" },
+    { id: "feedback", icon: "📝", label: "피드백" },
+    { id: "connection", icon: "🔗", label: "연결 관리" },
     { id: "system", icon: "⚙️", label: "시스템" },
   ];
 
@@ -87,6 +90,9 @@
           <span class="nav-label">{item.label}</span>
           {#if item.id === "dashboard" && alertCount > 0}
             <span class="nav-badge">{alertCount}</span>
+          {/if}
+          {#if item.id === "message" && msgUnread > 0}
+            <span class="nav-badge">{msgUnread}</span>
           {/if}
           {#if item.disabled}
             <span class="nav-soon">준비 중</span>

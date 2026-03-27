@@ -102,6 +102,7 @@ impl DeskClient {
         let do_request = |client: &reqwest::Client, url: &str, token: &str, method: &str, body: &Option<serde_json::Value>| {
             let mut req = match method {
                 "POST" => client.post(url),
+                "PUT" => client.put(url),
                 "PATCH" => client.patch(url),
                 "DELETE" => client.delete(url),
                 _ => client.get(url),
@@ -183,12 +184,82 @@ pub async fn init_client(server_url: &str) {
     *lock = Some(DeskClient::new(server_url));
 }
 
+/// 저장된 연결 정보로 자동 복원 (앱 시작 시 호출)
+pub async fn restore_connection() -> bool {
+    let server_url = match database::get_desk_config("server_url") {
+        Some(u) if !u.is_empty() => u,
+        _ => return false,
+    };
+    let refresh_token = match database::get_desk_config("refresh_token") {
+        Some(t) if !t.is_empty() => t,
+        _ => return false,
+    };
+
+    let mut client = DeskClient::new(&server_url);
+    client.refresh_token = refresh_token;
+
+    match client.refresh_auth().await {
+        Ok(true) => {
+            // 갱신된 토큰 다시 저장
+            database::set_desk_config("access_token", &client.access_token);
+            database::set_desk_config("refresh_token", &client.refresh_token);
+            let mut lock = CLIENT.lock().await;
+            *lock = Some(client);
+            log::info!("Desk 연결 자동 복원 완료");
+            true
+        }
+        _ => {
+            log::warn!("Desk 연결 자동 복원 실패");
+            false
+        }
+    }
+}
+
+/// 연결 정보를 로컬 DB에 저장
+fn persist_connection(server_url: &str, access_token: &str, refresh_token: &str) {
+    database::set_desk_config("server_url", server_url);
+    database::set_desk_config("access_token", access_token);
+    database::set_desk_config("refresh_token", refresh_token);
+}
+
 pub async fn join(code: &str, name: &str, device_name: &str) -> Result<bool, String> {
     let mut lock = CLIENT.lock().await;
     match lock.as_mut() {
-        Some(client) => client.join(code, name, device_name).await,
+        Some(client) => {
+            let result = client.join(code, name, device_name).await?;
+            persist_connection(&client.server_url, &client.access_token, &client.refresh_token);
+            // member_code 저장 (MQTT 연결 시 사용)
+            database::set_desk_config("member_code", code);
+
+            // MQTT 연결 시도
+            let host = extract_host(&client.server_url);
+            let code_owned = code.to_string();
+            tokio::spawn(async move {
+                crate::mqtt_client::connect(&host, 1883, &code_owned, &code_owned, &code_owned)
+                    .await
+                    .ok();
+            });
+
+            Ok(result)
+        }
         None => Err("Desk 클라이언트 미초기화".into()),
     }
+}
+
+/// URL에서 host 부분만 추출
+fn extract_host(url: &str) -> String {
+    let without_scheme = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url);
+    without_scheme
+        .split(':')
+        .next()
+        .unwrap_or(without_scheme)
+        .split('/')
+        .next()
+        .unwrap_or(without_scheme)
+        .to_string()
 }
 
 pub async fn health() -> Result<bool, String> {
@@ -226,6 +297,137 @@ pub async fn get_my_feedback() -> Result<serde_json::Value, String> {
     let mut lock = CLIENT.lock().await;
     match lock.as_mut() {
         Some(client) => client.get_my_feedback().await,
+        None => Err("Desk 미연결".into()),
+    }
+}
+
+pub async fn disconnect() {
+    // MQTT 먼저 끊기
+    crate::mqtt_client::disconnect().await;
+
+    let mut lock = CLIENT.lock().await;
+    *lock = None;
+    database::clear_desk_config();
+    // 연결 해제 시 해당 서버의 로컬 메시지/아웃박스도 정리
+    database::clear_local_messages();
+}
+
+pub async fn get_server_url() -> Option<String> {
+    let lock = CLIENT.lock().await;
+    lock.as_ref().map(|c| c.server_url.clone())
+}
+
+// ── DM API ──
+
+pub async fn send_dm(target_code: &str, body: &str) -> Result<serde_json::Value, String> {
+    let mut lock = CLIENT.lock().await;
+    match lock.as_mut() {
+        Some(client) => {
+            let payload = serde_json::json!({
+                "target_code": target_code,
+                "body": body,
+            });
+            client.request("POST", "/api/dm", Some(payload)).await
+        }
+        None => Err("Desk 미연결".into()),
+    }
+}
+
+pub async fn dm_delivered(msg_id: &str) -> Result<(), String> {
+    let mut lock = CLIENT.lock().await;
+    match lock.as_mut() {
+        Some(client) => {
+            let path = format!("/api/dm/{}/delivered", msg_id);
+            client.request("POST", &path, None).await?;
+            Ok(())
+        }
+        None => Err("Desk 미연결".into()),
+    }
+}
+
+pub async fn dm_read(msg_id: &str) -> Result<(), String> {
+    let mut lock = CLIENT.lock().await;
+    match lock.as_mut() {
+        Some(client) => {
+            let path = format!("/api/dm/{}/read", msg_id);
+            client.request("POST", &path, None).await?;
+            Ok(())
+        }
+        None => Err("Desk 미연결".into()),
+    }
+}
+
+pub async fn get_conversations() -> Result<serde_json::Value, String> {
+    let mut lock = CLIENT.lock().await;
+    match lock.as_mut() {
+        Some(client) => client.request("GET", "/api/dm/conversations", None).await,
+        None => Err("Desk 미연결".into()),
+    }
+}
+
+pub async fn get_conversation_messages(conv_id: &str) -> Result<serde_json::Value, String> {
+    let mut lock = CLIENT.lock().await;
+    match lock.as_mut() {
+        Some(client) => {
+            let path = format!("/api/dm/conversations/{}/messages", conv_id);
+            client.request("GET", &path, None).await
+        }
+        None => Err("Desk 미연결".into()),
+    }
+}
+
+pub async fn get_contacts_list() -> Result<serde_json::Value, String> {
+    let mut lock = CLIENT.lock().await;
+    match lock.as_mut() {
+        Some(client) => client.request("GET", "/api/contacts", None).await,
+        None => Err("Desk 미연결".into()),
+    }
+}
+
+// ── E2E 암호화 공개키 API ──
+
+pub async fn upload_public_key(public_key: &str) -> Result<(), String> {
+    let mut lock = CLIENT.lock().await;
+    match lock.as_mut() {
+        Some(client) => {
+            let body = serde_json::json!({ "public_key": public_key });
+            client.request("PUT", "/api/contacts/public-key", Some(body)).await?;
+            Ok(())
+        }
+        None => Err("Desk 미연결".into()),
+    }
+}
+
+pub async fn get_public_key(code: &str) -> Result<String, String> {
+    let mut lock = CLIENT.lock().await;
+    match lock.as_mut() {
+        Some(client) => {
+            let path = format!("/api/contacts/{}/public-key", code);
+            let resp = client.request("GET", &path, None).await?;
+            resp["public_key"].as_str().map(|s| s.to_string())
+                .ok_or("공개키 없음".into())
+        }
+        None => Err("Desk 미연결".into()),
+    }
+}
+
+pub async fn send_dm_encrypted(
+    target_code: &str,
+    body: &str,
+    ephemeral_key: &str,
+    nonce: &str,
+) -> Result<serde_json::Value, String> {
+    let mut lock = CLIENT.lock().await;
+    match lock.as_mut() {
+        Some(client) => {
+            let payload = serde_json::json!({
+                "target_code": target_code,
+                "body": body,
+                "ephemeral_key": ephemeral_key,
+                "nonce": nonce,
+            });
+            client.request("POST", "/api/dm", Some(payload)).await
+        }
         None => Err("Desk 미연결".into()),
     }
 }
