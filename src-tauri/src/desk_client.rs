@@ -455,6 +455,49 @@ pub async fn send_dm_encrypted(
     }
 }
 
+/// 참여 요청 제출 (참여코드 없이)
+pub async fn submit_join_request(
+    server_url: &str,
+    name: &str,
+    device_name: &str,
+) -> Result<serde_json::Value, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
+
+    let url = format!("{}/api/join-request", server_url.trim_end_matches('/'));
+    let body = serde_json::json!({
+        "name": name,
+        "device_name": device_name,
+        "os": std::env::consts::OS,
+        "app_version": env!("CARGO_PKG_VERSION"),
+        "ip": get_local_ip(),
+    });
+
+    let resp = client.post(&url).json(&body).send().await.map_err(|e| e.to_string())?;
+    resp.json().await.map_err(|e| e.to_string())
+}
+
+/// 참여 요청 상태 확인 (폴링)
+pub async fn check_join_status(
+    server_url: &str,
+    request_id: i64,
+) -> Result<serde_json::Value, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
+
+    let url = format!(
+        "{}/api/join-request/{}/status",
+        server_url.trim_end_matches('/'),
+        request_id
+    );
+    let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
+    resp.json().await.map_err(|e| e.to_string())
+}
+
 /// 오프라인 피드백 큐를 서버로 전송
 pub async fn flush_feedback_outbox() {
     let items = database::get_feedback_outbox();

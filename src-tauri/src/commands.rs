@@ -440,6 +440,72 @@ pub async fn desk_get_feedback(page: Option<i32>, per_page: Option<i32>) -> Resu
     }
 }
 
+#[tauri::command]
+pub async fn desk_request_join(server_url: String, name: String, device_name: String) -> Result<Value, String> {
+    let res = desk_client::submit_join_request(&server_url, &name, &device_name).await?;
+    // request_id를 desk_config에 저장 (폴링용)
+    if let Some(data) = res.get("data") {
+        if let Some(id) = data.get("request_id").and_then(|v| v.as_i64()) {
+            database::set_desk_config("join_request_id", &id.to_string());
+            database::set_desk_config("join_server_url", &server_url);
+        }
+    }
+    Ok(res)
+}
+
+#[tauri::command]
+pub async fn desk_check_join_status() -> Result<Value, String> {
+    let server_url = database::get_desk_config("join_server_url").unwrap_or_default();
+    let request_id: i64 = database::get_desk_config("join_request_id")
+        .unwrap_or_default()
+        .parse()
+        .unwrap_or(0);
+
+    if server_url.is_empty() || request_id == 0 {
+        return Ok(serde_json::json!({"ok": false, "message": "요청 정보 없음"}));
+    }
+
+    let res = desk_client::check_join_status(&server_url, request_id).await?;
+
+    // approved 상태면 자동으로 Desk 연결 (토큰 저장 + MQTT 연결)
+    if let Some(data) = res.get("data") {
+        if data.get("status").and_then(|v| v.as_str()) == Some("approved") {
+            if let (Some(token), Some(refresh)) = (
+                data.get("access_token").and_then(|v| v.as_str()),
+                data.get("refresh_token").and_then(|v| v.as_str()),
+            ) {
+                // 연결 정보 저장
+                database::set_desk_config("server_url", &server_url);
+                database::set_desk_config("access_token", token);
+                database::set_desk_config("refresh_token", refresh);
+                if let Some(code) = data.get("code").and_then(|v| v.as_str()) {
+                    database::set_desk_config("member_code", code);
+                }
+                // Desk 클라이언트 초기화
+                desk_client::init_client(&server_url).await;
+                // MQTT 연결
+                let host = crate::extract_mqtt_host(&server_url);
+                let code = data.get("code").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                tokio::spawn(async move {
+                    crate::mqtt_client::connect(&host, 1883, &code, &code, &code).await.ok();
+                });
+                // 요청 정보 정리
+                database::delete_desk_config("join_request_id");
+                database::delete_desk_config("join_server_url");
+            }
+        }
+    }
+
+    Ok(res)
+}
+
+#[tauri::command]
+pub async fn desk_cancel_join_request() -> Result<Value, String> {
+    database::delete_desk_config("join_request_id");
+    database::delete_desk_config("join_server_url");
+    Ok(serde_json::json!({"ok": true, "message": "요청이 취소되었습니다."}))
+}
+
 // ── Messages / MQTT ──
 
 #[tauri::command]

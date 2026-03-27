@@ -1,5 +1,5 @@
 <script>
-  import { onMount } from "svelte";
+  import { onMount, onDestroy } from "svelte";
   import Card from "../components/Card.svelte";
   import ConnBadge from "../components/ConnBadge.svelte";
   import Tooltip from "../components/Tooltip.svelte";
@@ -8,6 +8,7 @@
   import {
     getSettings, saveSettings, verifySworkLogin, verifyMailLogin,
     testTelegram, lookupTelegramChats, disconnectService, deskJoin, deskHealth, deskDisconnect,
+    deskRequestJoin, deskCheckJoinStatus, deskCancelJoinRequest,
     getHostname,
   } from "../lib/api.js";
 
@@ -17,13 +18,15 @@
 
   // ── Desk 상태 ──
   let deskServerUrl = $state("");
-  let deskCode = $state("");
   let deskName = $state("");
   let deskDeviceName = $state("");
   let deskConnected = $state(false);
   let deskReachable = $state(false);
   let joiningDesk = $state(false);
   let deskChecked = $state(false);
+  let joinPending = $state(false);
+  let joinRequestId = $state(null);
+  let pollInterval = null;
 
   // ── SWORK 상태 ──
   let sworkUser = $state("");
@@ -69,6 +72,27 @@
       try {
         deskDeviceName = await getHostname();
       } catch (_) { /* ignore */ }
+    }
+
+    // 기존 pending 요청이 있으면 폴링 재개
+    if (!deskConnected) {
+      try {
+        const status = await deskCheckJoinStatus();
+        if (status?.data?.status === "pending") {
+          joinPending = true;
+          startJoinPolling();
+        } else if (status?.data?.status === "approved") {
+          deskConnected = true;
+          deskReachable = true;
+        }
+      } catch (_) { /* 요청 정보 없으면 무시 */ }
+    }
+  });
+
+  onDestroy(() => {
+    if (pollInterval) {
+      clearInterval(pollInterval);
+      pollInterval = null;
     }
   });
 
@@ -258,22 +282,59 @@
   }
 
   // ── Desk 함수 ──
-  async function joinDesk() {
-    if (!deskServerUrl || !deskCode || !deskName || !deskDeviceName) {
+  async function requestJoin() {
+    if (!deskServerUrl || !deskName || !deskDeviceName) {
       showToast("모든 항목을 입력하세요.", "error"); return;
     }
     joiningDesk = true;
     try {
-      const r = await deskJoin(deskServerUrl, deskCode, deskName, deskDeviceName);
-      if (r.ok) {
-        deskConnected = true;
-        deskReachable = true;
-        showToast("Desk 서버 연결 성공!", "success");
+      const res = await deskRequestJoin(deskServerUrl, deskName, deskDeviceName);
+      if (res?.ok) {
+        joinPending = true;
+        joinRequestId = res.data?.request_id;
+        showToast("참여 요청이 접수되었습니다. 관리자 승인을 기다려주세요.", "info");
+        startJoinPolling();
       } else {
-        showToast(r.message || "연결 실패", "error");
+        showToast(res?.message || "요청 실패", "error");
       }
-    } catch (e) { showToast("연결 오류: " + e, "error"); }
+    } catch (e) { showToast("요청 오류: " + e, "error"); }
     joiningDesk = false;
+  }
+
+  function startJoinPolling() {
+    if (pollInterval) clearInterval(pollInterval);
+    pollInterval = setInterval(async () => {
+      try {
+        const res = await deskCheckJoinStatus();
+        if (res?.data?.status === "approved") {
+          clearInterval(pollInterval);
+          pollInterval = null;
+          joinPending = false;
+          deskConnected = true;
+          deskReachable = true;
+          if (res.data?.server_url) deskServerUrl = res.data.server_url;
+          showToast("승인되었습니다! Desk에 연결되었습니다.", "success");
+        } else if (res?.data?.status === "rejected") {
+          clearInterval(pollInterval);
+          pollInterval = null;
+          joinPending = false;
+          showToast(`요청이 거부되었습니다${res.data.reason ? ": " + res.data.reason : ""}`, "error");
+        }
+      } catch (_) { /* 폴링 실패는 무시 — 다음 주기에 재시도 */ }
+    }, 5000);
+  }
+
+  async function cancelJoinRequest() {
+    if (pollInterval) {
+      clearInterval(pollInterval);
+      pollInterval = null;
+    }
+    try {
+      await deskCancelJoinRequest();
+      joinPending = false;
+      joinRequestId = null;
+      showToast("참여 요청이 취소되었습니다.", "info");
+    } catch (e) { showToast("취소 실패", "error"); }
   }
 
   async function checkDeskHealth() {
@@ -300,7 +361,7 @@
     </button>
     <button class="tab" class:active={activeTab === "desk"} onclick={() => activeTab = "desk"}>
       Desk
-      <span class="tab-dot" class:green={deskConnected && deskReachable} class:red={deskConnected && !deskReachable} class:gray={!deskConnected}></span>
+      <span class="tab-dot" class:green={deskConnected && deskReachable} class:red={deskConnected && !deskReachable} class:yellow={joinPending} class:gray={!deskConnected && !joinPending}></span>
     </button>
   </div>
 
@@ -465,20 +526,30 @@
               <button class="btn btn-ghost-sm danger-text" onclick={() => {
                 showDialog({ type: "danger", title: "Desk 연결 해제", message: "Desk 서버와의 연결을 해제합니다.\n저장된 인증 정보가 삭제됩니다.", confirmText: "해제",
                   async onConfirm() {
-                    try { await deskDisconnect(); deskConnected = false; deskReachable = false; deskServerUrl = ""; deskCode = ""; deskName = ""; deskDeviceName = ""; showToast("Desk 연결이 해제되었습니다.", "info"); }
+                    try { await deskDisconnect(); deskConnected = false; deskReachable = false; deskServerUrl = ""; deskName = ""; deskDeviceName = ""; showToast("Desk 연결이 해제되었습니다.", "info"); }
                     catch (e) { showToast("해제 실패", "error"); }
                   },
                 });
               }}>연결 해제</button>
             </div>
           </div>
+        {:else if joinPending}
+          <div class="join-pending">
+            <div class="pending-icon-row">
+              <span class="pending-spinner"></span>
+              <span class="pending-text">승인 대기 중...</span>
+            </div>
+            <p class="pending-desc">관리자가 참여 요청을 승인하면 자동으로 연결됩니다.</p>
+            <div class="btn-row mt-12">
+              <button class="btn btn-ghost-sm danger-text" onclick={cancelJoinRequest}>요청 취소</button>
+            </div>
+          </div>
         {:else}
           <div class="form-group"><label for="desk-url">서버 주소</label><input id="desk-url" type="text" bind:value={deskServerUrl} placeholder="http://192.168.x.x:29180" /></div>
-          <div class="form-group"><label for="desk-code">참여코드</label><input id="desk-code" type="text" bind:value={deskCode} placeholder="8자리 코드" maxlength="8" /></div>
           <div class="form-group"><label for="desk-name">이름</label><input id="desk-name" type="text" bind:value={deskName} placeholder="홍길동" /></div>
           <div class="form-group"><label for="desk-device">디바이스명</label><input id="desk-device" type="text" bind:value={deskDeviceName} placeholder="사무실-PC" /></div>
           <div class="btn-row">
-            <button class="btn btn-primary" onclick={joinDesk} disabled={joiningDesk}>{joiningDesk ? "연결 중..." : "연결"}</button>
+            <button class="btn btn-primary" onclick={requestJoin} disabled={joiningDesk}>{joiningDesk ? "요청 중..." : "참여 요청"}</button>
           </div>
         {/if}
       </Card>
@@ -522,6 +593,7 @@
   .tab-dot.green { background: var(--c-success); }
   .tab-dot.red { background: var(--c-danger); }
   .tab-dot.gray { background: #d1d5db; }
+  .tab-dot.yellow { background: var(--c-warning, #f59e0b); }
   .tab-content {
     animation: fadeIn 0.15s ease;
   }
@@ -542,4 +614,35 @@
   }
   .status-dot.green { background: var(--c-success); }
   .status-dot.red { background: var(--c-danger); }
+
+  .join-pending {
+    text-align: center;
+    padding: 20px 0;
+  }
+  .pending-icon-row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    margin-bottom: 8px;
+  }
+  .pending-text {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--c-text);
+  }
+  .pending-desc {
+    font-size: 13px;
+    color: var(--c-text-secondary);
+    margin: 0;
+  }
+  .pending-spinner {
+    width: 18px;
+    height: 18px;
+    border: 2px solid var(--c-border);
+    border-top-color: var(--c-primary);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
 </style>

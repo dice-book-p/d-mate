@@ -66,6 +66,18 @@ export async function deskJoin(serverUrl, code, name, deviceName) {
   return invoke("desk_join", { serverUrl, code, name, deviceName });
 }
 
+export async function deskRequestJoin(serverUrl, name, deviceName) {
+  return invoke("desk_request_join", { serverUrl, name, deviceName });
+}
+
+export async function deskCheckJoinStatus() {
+  return invoke("desk_check_join_status");
+}
+
+export async function deskCancelJoinRequest() {
+  return invoke("desk_cancel_join_request");
+}
+
 export async function deskHealth() {
   return invoke("desk_health");
 }
