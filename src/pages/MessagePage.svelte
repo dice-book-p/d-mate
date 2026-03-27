@@ -79,7 +79,7 @@
       if (data?.error) {
         conversations = [];
       } else {
-        conversations = data?.data || (Array.isArray(data) ? data : []);
+        conversations = data?.data || [];
       }
     } catch (e) {
       console.error("Failed to load conversations:", e);
@@ -93,7 +93,7 @@
       if (data?.error) {
         contacts = [];
       } else {
-        contacts = data?.data || (Array.isArray(data) ? data : []);
+        contacts = data?.data || [];
       }
     } catch (e) {
       console.error("Failed to load contacts:", e);

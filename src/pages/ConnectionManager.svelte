@@ -3,7 +3,7 @@
   import Card from "../components/Card.svelte";
   import ConnBadge from "../components/ConnBadge.svelte";
   import Tooltip from "../components/Tooltip.svelte";
-  import { settings, showToast, alerts as alertStore, pageDirty } from "../lib/stores.js";
+  import { settings, showToast, alerts as alertStore, pageDirty, deskState } from "../lib/stores.js";
   import { showDialog } from "../lib/dialog.js";
   import {
     getSettings, saveSettings, verifySworkLogin, verifyMailLogin,
@@ -17,7 +17,7 @@
   let allAlerts = $state([]);
 
   // ── Desk 상태 ──
-  let deskServerUrl = $state("");
+  let deskServerUrl = $state("http://192.168.204.53:29180");
   let deskName = $state("");
   let deskDeviceName = $state("");
   let deskConnected = $state(false);
@@ -55,16 +55,52 @@
   let mailSaved = $state(false);
 
   onMount(async () => {
-    try {
-      const r = await deskHealth();
-      deskReachable = r.reachable;
-      deskConnected = r.connected;
+    let ds;
+    const unsub = deskState.subscribe(v => ds = v);
+    unsub();
+
+    if (ds.checked) {
+      // store에서 복원 (페이지 전환 시 재조회 안 함)
+      deskConnected = ds.connected;
+      deskReachable = ds.reachable;
+      deskServerUrl = ds.serverUrl || "http://192.168.204.53:29180";
       deskChecked = true;
-      if (r.connected && r.server_url) {
-        deskServerUrl = r.server_url;
+      if (ds.joinPending) {
+        joinPending = true;
+        joinRequestId = ds.joinRequestId;
+        startJoinPolling();
       }
-    } catch (_) {
-      deskChecked = true;
+    } else {
+      // 최초 체크
+      try {
+        const r = await deskHealth();
+        deskReachable = r.reachable;
+        deskConnected = r.connected;
+        deskChecked = true;
+        if (r.connected && r.server_url) {
+          deskServerUrl = r.server_url;
+        }
+        deskState.set({ connected: r.connected, reachable: r.reachable, serverUrl: r.server_url || "", joinPending: false, joinRequestId: null, checked: true });
+      } catch (_) {
+        deskChecked = true;
+        deskState.set({ connected: false, reachable: false, serverUrl: "", joinPending: false, joinRequestId: null, checked: true });
+      }
+
+      // 기존 pending 요청이 있으면 폴링 재개
+      if (!deskConnected) {
+        try {
+          const status = await deskCheckJoinStatus();
+          if (status?.data?.status === "pending") {
+            joinPending = true;
+            deskState.update(s => ({ ...s, joinPending: true }));
+            startJoinPolling();
+          } else if (status?.data?.status === "approved") {
+            deskConnected = true;
+            deskReachable = true;
+            deskState.set({ connected: true, reachable: true, serverUrl: deskServerUrl, joinPending: false, joinRequestId: null, checked: true });
+          }
+        } catch (_) { /* 요청 정보 없으면 무시 */ }
+      }
     }
 
     // Desk 디바이스명 기본값: PC hostname
@@ -72,20 +108,6 @@
       try {
         deskDeviceName = await getHostname();
       } catch (_) { /* ignore */ }
-    }
-
-    // 기존 pending 요청이 있으면 폴링 재개
-    if (!deskConnected) {
-      try {
-        const status = await deskCheckJoinStatus();
-        if (status?.data?.status === "pending") {
-          joinPending = true;
-          startJoinPolling();
-        } else if (status?.data?.status === "approved") {
-          deskConnected = true;
-          deskReachable = true;
-        }
-      } catch (_) { /* 요청 정보 없으면 무시 */ }
     }
   });
 
@@ -292,6 +314,7 @@
       if (res?.ok) {
         joinPending = true;
         joinRequestId = res.data?.request_id;
+        deskState.update(s => ({ ...s, joinPending: true, joinRequestId: res.data?.request_id }));
         showToast("참여 요청이 접수되었습니다. 관리자 승인을 기다려주세요.", "info");
         startJoinPolling();
       } else {
@@ -313,11 +336,13 @@
           deskConnected = true;
           deskReachable = true;
           if (res.data?.server_url) deskServerUrl = res.data.server_url;
+          deskState.set({ connected: true, reachable: true, serverUrl: deskServerUrl, joinPending: false, joinRequestId: null, checked: true });
           showToast("승인되었습니다! Desk에 연결되었습니다.", "success");
         } else if (res?.data?.status === "rejected") {
           clearInterval(pollInterval);
           pollInterval = null;
           joinPending = false;
+          deskState.update(s => ({ ...s, joinPending: false, joinRequestId: null }));
           showToast(`요청이 거부되었습니다${res.data.reason ? ": " + res.data.reason : ""}`, "error");
         }
       } catch (_) { /* 폴링 실패는 무시 — 다음 주기에 재시도 */ }
@@ -333,6 +358,7 @@
       await deskCancelJoinRequest();
       joinPending = false;
       joinRequestId = null;
+      deskState.update(s => ({ ...s, joinPending: false, joinRequestId: null }));
       showToast("참여 요청이 취소되었습니다.", "info");
     } catch (e) { showToast("취소 실패", "error"); }
   }
@@ -342,6 +368,7 @@
       const r = await deskHealth();
       deskReachable = r.reachable;
       deskConnected = r.connected;
+      deskState.set({ connected: r.connected, reachable: r.reachable, serverUrl: r.server_url || deskServerUrl, joinPending, joinRequestId, checked: true });
       showToast(r.reachable ? "서버 정상" : "서버 응답 없음", r.reachable ? "success" : "error");
     } catch (e) { showToast("확인 실패", "error"); }
   }
@@ -526,7 +553,7 @@
               <button class="btn btn-ghost-sm danger-text" onclick={() => {
                 showDialog({ type: "danger", title: "Desk 연결 해제", message: "Desk 서버와의 연결을 해제합니다.\n저장된 인증 정보가 삭제됩니다.", confirmText: "해제",
                   async onConfirm() {
-                    try { await deskDisconnect(); deskConnected = false; deskReachable = false; deskServerUrl = ""; deskName = ""; deskDeviceName = ""; showToast("Desk 연결이 해제되었습니다.", "info"); }
+                    try { await deskDisconnect(); deskConnected = false; deskReachable = false; deskServerUrl = ""; deskName = ""; deskDeviceName = ""; deskState.set({ connected: false, reachable: false, serverUrl: "", joinPending: false, joinRequestId: null, checked: true }); showToast("Desk 연결이 해제되었습니다.", "info"); }
                     catch (e) { showToast("해제 실패", "error"); }
                   },
                 });
@@ -545,7 +572,7 @@
             </div>
           </div>
         {:else}
-          <div class="form-group"><label for="desk-url">서버 주소</label><input id="desk-url" type="text" bind:value={deskServerUrl} placeholder="http://192.168.x.x:29180" /></div>
+          <div class="form-group"><label for="desk-url">서버 주소</label><input id="desk-url" type="text" bind:value={deskServerUrl} placeholder="http://192.168.204.53:29180" /></div>
           <div class="form-group"><label for="desk-name">이름</label><input id="desk-name" type="text" bind:value={deskName} placeholder="홍길동" /></div>
           <div class="form-group"><label for="desk-device">디바이스명</label><input id="desk-device" type="text" bind:value={deskDeviceName} placeholder="사무실-PC" /></div>
           <div class="btn-row">

@@ -10,6 +10,15 @@ export const pageDirty = writable(false);
 export const unreadCount = writable(0);
 export const chatParams = writable({});
 
+export const deskState = writable({
+  connected: false,
+  reachable: false,
+  serverUrl: "",
+  joinPending: false,
+  joinRequestId: null,
+  checked: false,
+});
+
 export function showToast(message, type = "info") {
   toastMessage.set({ message, type });
   setTimeout(() => toastMessage.set(null), 3000);

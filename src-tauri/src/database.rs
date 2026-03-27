@@ -73,7 +73,7 @@ pub fn init_db() {
             work_days TEXT DEFAULT 'mon-fri',
             autostart INTEGER DEFAULT 0,
             error_reporting INTEGER DEFAULT 1,
-            update_server_url TEXT DEFAULT 'http://192.168.204.53:18900',
+            update_server_url TEXT DEFAULT 'http://192.168.204.53:29180',
             os_notification_enabled INTEGER DEFAULT 1,
             updated_at TEXT DEFAULT (datetime('now'))
         );
@@ -204,7 +204,7 @@ pub fn init_db() {
 
     // update_server_url이 비어있으면 기본값 설정
     conn.execute(
-        "UPDATE settings SET update_server_url='http://192.168.204.53:18900' WHERE id=1 AND (update_server_url IS NULL OR update_server_url='')",
+        "UPDATE settings SET update_server_url='http://192.168.204.53:29180' WHERE id=1 AND (update_server_url IS NULL OR update_server_url='')",
         [],
     ).ok();
 }

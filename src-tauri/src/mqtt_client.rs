@@ -24,6 +24,9 @@ pub async fn init(handle: tauri::AppHandle) {
 }
 
 /// Connect to the MQTT broker and start the receive loop
+///
+/// NOTE: 참여 요청 응답(d-mate/join-response/{id})은 MQTT 연결 전에 발생하므로
+/// HTTP 폴링(desk_check_join_status)으로 처리. MQTT 구독 불필요.
 pub async fn connect(
     host: &str,
     port: u16,
