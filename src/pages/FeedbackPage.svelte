@@ -3,15 +3,22 @@
   import ConnBanner from "../components/ConnBanner.svelte";
   import { showToast } from "../lib/stores.js";
   import { deskSubmitFeedback, deskGetFeedback, deskHealth } from "../lib/api.js";
-  import { onMount } from "svelte";
+  import { onMount, onDestroy } from "svelte";
+  import { listen } from "@tauri-apps/api/event";
 
   let deskConnected = $state(false);
   let feedbackList = $state([]);
   let loading = $state(true);
   let submitting = $state(false);
 
+  // 페이지네이션
+  const FB_PER_PAGE = 10;
+  let fbPage = $state(1);
+  let fbTotalPages = $state(1);
+
   // 신규 작성 폼
   let showForm = $state(false);
+  let unlisten = null;
   let category = $state("suggestion");
   let title = $state("");
   let body = $state("");
@@ -32,14 +39,34 @@
       if (deskConnected) await loadFeedback();
     } catch (e) { /* desk not connected */ }
     loading = false;
+
+    // 피드백 상태 변경 실시간 수신
+    unlisten = await listen("mqtt:feedback_update", async () => {
+      if (deskConnected) await loadFeedback();
+    });
   });
 
-  async function loadFeedback() {
+  onDestroy(() => {
+    if (unlisten) unlisten();
+  });
+
+  async function loadFeedback(page = 1) {
     try {
-      const data = await deskGetFeedback();
-      if (Array.isArray(data)) feedbackList = data;
-      else if (data.error) feedbackList = [];
+      const data = await deskGetFeedback(page, FB_PER_PAGE);
+      if (data?.error) {
+        feedbackList = [];
+      } else {
+        feedbackList = data.data || [];
+        const total = data.total || feedbackList.length;
+        fbTotalPages = Math.max(1, Math.ceil(total / FB_PER_PAGE));
+      }
+      fbPage = page;
     } catch (e) { feedbackList = []; }
+  }
+
+  function goFbPage(p) {
+    if (p < 1 || p > fbTotalPages || p === fbPage) return;
+    loadFeedback(p);
   }
 
   async function submit() {
@@ -50,9 +77,14 @@
     try {
       const r = await deskSubmitFeedback(category, title.trim(), body.trim());
       if (r.ok) {
-        showToast("피드백이 전송되었습니다!", "success");
+        // 오프라인 큐에 저장된 경우 별도 안내
+        if (r.message && r.message.includes("자동 전송")) {
+          showToast(r.message, "info");
+        } else {
+          showToast("피드백이 전송되었습니다!", "success");
+        }
         title = ""; body = ""; showForm = false;
-        await loadFeedback();
+        if (deskConnected) await loadFeedback(1);
       } else {
         showToast(r.message || "전송 실패", "error");
       }
@@ -64,11 +96,9 @@
 <div class="page">
   <div class="page-header">
     <h2 class="page-title">피드백</h2>
-    {#if deskConnected}
-      <button class="btn btn-primary" onclick={() => showForm = !showForm}>
-        {showForm ? "취소" : "+ 새 피드백"}
-      </button>
-    {/if}
+    <button class="btn btn-primary" onclick={() => showForm = !showForm}>
+      {showForm ? "취소" : "+ 새 피드백"}
+    </button>
   </div>
 
   <ConnBanner items={banners} />
@@ -125,6 +155,15 @@
         </Card>
       {/each}
     </div>
+    {#if fbTotalPages > 1}
+      <div class="pagination">
+        <button class="page-btn" onclick={() => goFbPage(fbPage - 1)} disabled={fbPage <= 1}>이전</button>
+        {#each Array.from({ length: fbTotalPages }, (_, i) => i + 1) as p}
+          <button class="page-btn" class:active={p === fbPage} onclick={() => goFbPage(p)}>{p}</button>
+        {/each}
+        <button class="page-btn" onclick={() => goFbPage(fbPage + 1)} disabled={fbPage >= fbTotalPages}>다음</button>
+      </div>
+    {/if}
   {/if}
 </div>
 
@@ -180,5 +219,39 @@
     resize: vertical;
     background: var(--c-surface);
     color: var(--c-text);
+  }
+
+  /* 페이지네이션 */
+  .pagination {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 4px;
+    margin-top: 16px;
+    padding: 8px 0;
+  }
+  .page-btn {
+    padding: 6px 12px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--c-text-secondary);
+    background: var(--c-surface);
+    border: 1px solid var(--c-border);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+  }
+  .page-btn:hover:not(:disabled) {
+    background: var(--c-primary-light);
+    color: var(--c-primary);
+  }
+  .page-btn.active {
+    background: var(--c-primary);
+    color: #fff;
+    border-color: var(--c-primary);
+  }
+  .page-btn:disabled {
+    opacity: 0.4;
+    cursor: default;
   }
 </style>

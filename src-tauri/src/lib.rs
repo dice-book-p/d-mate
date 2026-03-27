@@ -14,10 +14,11 @@ mod scheduler;
 mod swork_client;
 mod telegram;
 
+use serde_json::Value;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Manager, WindowEvent,
+    Emitter, Manager, WindowEvent,
 };
 
 /// Extract hostname from a URL (e.g., "http://192.168.1.1:3000" -> "192.168.1.1")
@@ -101,6 +102,37 @@ pub fn run() {
                     }
                 }
             });
+
+            // Desk 복원 후 업데이트 체크 (5초 대기 후)
+            {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+
+                    if let Some(server_url) = desk_client::get_server_url().await {
+                        let current = env!("CARGO_PKG_VERSION");
+                        let url = format!("{}/api/update/check?version={}", server_url, current);
+                        let client = reqwest::Client::new();
+                        if let Ok(resp) = client
+                            .get(&url)
+                            .timeout(std::time::Duration::from_secs(5))
+                            .send()
+                            .await
+                        {
+                            if let Ok(data) = resp.json::<Value>().await {
+                                if data["ok"].as_bool() == Some(true) {
+                                    let update_data = data["data"].clone();
+                                    if update_data["force"].as_bool() == Some(true) {
+                                        handle.emit("update:force", &update_data).ok();
+                                    } else if update_data["available"].as_bool() == Some(true) {
+                                        handle.emit("update:available", &update_data).ok();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+            }
 
             // 스케줄러 시작
             if keyring_store::has_initial_setup() {
@@ -212,6 +244,7 @@ pub fn run() {
             commands::desk_get_feedback,
             commands::get_messages,
             commands::mark_message_read,
+            commands::mark_all_read,
             commands::get_unread_count,
             commands::get_contacts,
             commands::send_dm,
@@ -221,6 +254,8 @@ pub fn run() {
             commands::dm_read,
             commands::init_encryption,
             commands::mqtt_status,
+            commands::mqtt_reconnect,
+            commands::get_hostname,
             commands::hide_window,
             commands::quit_app,
         ])

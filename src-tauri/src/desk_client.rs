@@ -2,6 +2,8 @@ use once_cell::sync::Lazy;
 use tokio::sync::Mutex;
 use serde::{Deserialize, Serialize};
 
+use std::net::UdpSocket;
+
 use crate::database;
 
 static CLIENT: Lazy<Mutex<Option<DeskClient>>> = Lazy::new(|| Mutex::new(None));
@@ -22,12 +24,22 @@ struct TokenResponse {
     message: Option<String>,
 }
 
+fn get_local_ip() -> String {
+    UdpSocket::bind("0.0.0.0:0")
+        .and_then(|socket| {
+            socket.connect("8.8.8.8:80")?;
+            socket.local_addr()
+        })
+        .map(|addr| addr.ip().to_string())
+        .unwrap_or_default()
+}
+
 impl DeskClient {
     fn new(server_url: &str) -> Self {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(15))
             .build()
-            .unwrap();
+            .unwrap_or_else(|_| reqwest::Client::new());
         Self {
             client,
             server_url: server_url.trim_end_matches('/').to_string(),
@@ -50,6 +62,7 @@ impl DeskClient {
             "code": code,
             "name": name,
             "device_name": device_name,
+            "ip": get_local_ip(),
             "os": std::env::consts::OS,
             "app_version": env!("CARGO_PKG_VERSION"),
         });
@@ -162,8 +175,11 @@ impl DeskClient {
         self.request("POST", "/api/feedback", Some(body)).await
     }
 
-    async fn get_my_feedback(&mut self) -> Result<serde_json::Value, String> {
-        self.request("GET", "/api/feedback", None).await
+    async fn get_my_feedback(&mut self, page: Option<i32>, per_page: Option<i32>) -> Result<serde_json::Value, String> {
+        let p = page.unwrap_or(1);
+        let pp = per_page.unwrap_or(10);
+        let path = format!("/api/feedback?page={}&per_page={}", p, pp);
+        self.request("GET", &path, None).await
     }
 
     async fn health(&self) -> Result<bool, String> {
@@ -206,6 +222,11 @@ pub async fn restore_connection() -> bool {
             let mut lock = CLIENT.lock().await;
             *lock = Some(client);
             log::info!("Desk 연결 자동 복원 완료");
+
+            // 복원 성공 후 오프라인 큐 flush
+            drop(lock);
+            flush_feedback_outbox().await;
+
             true
         }
         _ => {
@@ -293,10 +314,10 @@ pub async fn submit_feedback(category: &str, title: &str, body: &str) -> Result<
     }
 }
 
-pub async fn get_my_feedback() -> Result<serde_json::Value, String> {
+pub async fn get_my_feedback(page: Option<i32>, per_page: Option<i32>) -> Result<serde_json::Value, String> {
     let mut lock = CLIENT.lock().await;
     match lock.as_mut() {
-        Some(client) => client.get_my_feedback().await,
+        Some(client) => client.get_my_feedback(page, per_page).await,
         None => Err("Desk 미연결".into()),
     }
 }
@@ -365,11 +386,13 @@ pub async fn get_conversations() -> Result<serde_json::Value, String> {
     }
 }
 
-pub async fn get_conversation_messages(conv_id: &str) -> Result<serde_json::Value, String> {
+pub async fn get_conversation_messages(conv_id: &str, limit: Option<i32>, offset: Option<i32>) -> Result<serde_json::Value, String> {
     let mut lock = CLIENT.lock().await;
     match lock.as_mut() {
         Some(client) => {
-            let path = format!("/api/dm/conversations/{}/messages", conv_id);
+            let lim = limit.unwrap_or(50);
+            let off = offset.unwrap_or(0);
+            let path = format!("/api/dm/conversations/{}/messages?limit={}&offset={}", conv_id, lim, off);
             client.request("GET", &path, None).await
         }
         None => Err("Desk 미연결".into()),
@@ -429,5 +452,26 @@ pub async fn send_dm_encrypted(
             client.request("POST", "/api/dm", Some(payload)).await
         }
         None => Err("Desk 미연결".into()),
+    }
+}
+
+/// 오프라인 피드백 큐를 서버로 전송
+pub async fn flush_feedback_outbox() {
+    let items = database::get_feedback_outbox();
+    if items.is_empty() {
+        return;
+    }
+    log::info!("피드백 outbox flush: {}건", items.len());
+    for (id, cat, title, body) in items {
+        match submit_feedback(&cat, &title, &body).await {
+            Ok(_) => {
+                database::delete_feedback_outbox(id);
+                log::info!("피드백 outbox #{} 전송 성공", id);
+            }
+            Err(e) => {
+                log::warn!("피드백 outbox #{} 전송 실패: {}", id, e);
+                break; // 하나 실패하면 나머지는 다음 기회에
+            }
+        }
     }
 }

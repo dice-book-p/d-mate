@@ -10,7 +10,14 @@
   let loading = $state(true);
   let sending = $state(false);
   let messagesEnd;
+  let messagesContainer;
   let unlisten = null;
+
+  // 페이지네이션 상태
+  const CHAT_PAGE_SIZE = 50;
+  let chatOffset = $state(0);
+  let hasOlder = $state(true);
+  let loadingOlder = $state(false);
   // chatParams store에서 값 가져오기
   const unsubParams = chatParams.subscribe((v) => {
     params = v || {};
@@ -50,18 +57,21 @@
   async function loadMessages() {
     try {
       if (params.conv_id) {
-        const data = await getConversationMessages(params.conv_id);
-        if (Array.isArray(data)) {
-          messages = data;
-        } else if (data?.messages) {
-          messages = data.messages;
+        const data = await getConversationMessages(params.conv_id, CHAT_PAGE_SIZE, 0);
+        let fetched;
+        if (data?.data) {
+          fetched = data.data;
+        } else if (Array.isArray(data)) {
+          fetched = data;
         } else {
           // conv_id로 로컬 메시지 fallback
-          const local = await getMessages(params.conv_id, 200);
-          messages = Array.isArray(local) ? local : [];
+          const local = await getMessages(params.conv_id, CHAT_PAGE_SIZE, 0);
+          fetched = Array.isArray(local) ? local : [];
         }
+        messages = fetched;
+        chatOffset = fetched.length;
+        hasOlder = fetched.length >= CHAT_PAGE_SIZE;
       } else {
-        // conv_id 없으면 빈 상태 (새 대화)
         messages = [];
       }
 
@@ -73,15 +83,67 @@
       }
     } catch (e) {
       console.error("Failed to load chat messages:", e);
-      // 서버 실패 시 로컬 DB에서 로드
       if (params.conv_id) {
         try {
-          const local = await getMessages(params.conv_id, 200);
-          messages = Array.isArray(local) ? local : [];
+          const local = await getMessages(params.conv_id, CHAT_PAGE_SIZE, 0);
+          const fetched = Array.isArray(local) ? local : [];
+          messages = fetched;
+          chatOffset = fetched.length;
+          hasOlder = fetched.length >= CHAT_PAGE_SIZE;
         } catch { messages = []; }
       } else {
         messages = [];
       }
+    }
+  }
+
+  async function loadOlderMessages() {
+    if (loadingOlder || !hasOlder || !params.conv_id) return;
+    loadingOlder = true;
+    try {
+      // 서버 API로 이전 메시지 로드
+      let older;
+      try {
+        const data = await getConversationMessages(params.conv_id, CHAT_PAGE_SIZE, chatOffset);
+        if (data?.data) {
+          older = data.data;
+        } else if (Array.isArray(data)) {
+          older = data;
+        } else {
+          const local = await getMessages(params.conv_id, CHAT_PAGE_SIZE, chatOffset);
+          older = Array.isArray(local) ? local : [];
+        }
+      } catch {
+        const local = await getMessages(params.conv_id, CHAT_PAGE_SIZE, chatOffset);
+        older = Array.isArray(local) ? local : [];
+      }
+
+      if (older.length > 0) {
+        // 스크롤 위치 보존
+        const container = messagesContainer;
+        const prevHeight = container?.scrollHeight || 0;
+        messages = [...older, ...messages];
+        chatOffset += older.length;
+        hasOlder = older.length >= CHAT_PAGE_SIZE;
+        // 스크롤 위치 복원 (새로 추가된 만큼 보정)
+        requestAnimationFrame(() => {
+          if (container) {
+            container.scrollTop = container.scrollHeight - prevHeight;
+          }
+        });
+      } else {
+        hasOlder = false;
+      }
+    } catch (e) {
+      console.error("Failed to load older messages:", e);
+    }
+    loadingOlder = false;
+  }
+
+  function handleChatScroll(e) {
+    const container = e.target;
+    if (container.scrollTop < 60 && hasOlder && !loadingOlder) {
+      loadOlderMessages();
     }
   }
 
@@ -127,9 +189,8 @@
   function formatTime(dateStr) {
     if (!dateStr) return "";
     try {
-      const d = new Date(
-        dateStr.replace(" ", "T") + (dateStr.includes("Z") ? "" : "Z")
-      );
+      // 서버가 KST로 저장하므로 로컬 시간으로 파싱 (Z 미추가)
+      const d = new Date(dateStr.replace(" ", "T"));
       return d.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" });
     } catch {
       return dateStr;
@@ -139,9 +200,8 @@
   function formatDateSeparator(dateStr) {
     if (!dateStr) return "";
     try {
-      const d = new Date(
-        dateStr.replace(" ", "T") + (dateStr.includes("Z") ? "" : "Z")
-      );
+      // 서버가 KST로 저장하므로 로컬 시간으로 파싱 (Z 미추가)
+      const d = new Date(dateStr.replace(" ", "T"));
       return d.toLocaleDateString("ko-KR", {
         year: "numeric",
         month: "long",
@@ -196,7 +256,7 @@
     <div class="header-spacer"></div>
   </header>
 
-  <div class="chat-messages">
+  <div class="chat-messages" bind:this={messagesContainer} onscroll={handleChatScroll}>
     {#if loading}
       <div class="chat-loading">
         <div class="spinner"></div>
@@ -208,6 +268,14 @@
         <small>첫 메시지를 보내보세요!</small>
       </div>
     {:else}
+      {#if loadingOlder}
+        <div class="loading-older">
+          <div class="spinner-sm"></div>
+          <span>이전 메시지 로딩 중...</span>
+        </div>
+      {:else if hasOlder}
+        <button class="load-older-btn" onclick={loadOlderMessages}>이전 메시지 불러오기</button>
+      {/if}
       {#each messages as msg, idx}
         {#if needsDateSep(idx)}
           <div class="date-separator">
@@ -462,5 +530,41 @@
   .send-btn:disabled {
     opacity: 0.5;
     cursor: default;
+  }
+
+  /* 이전 메시지 로딩 */
+  .loading-older {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 8px 0;
+    color: var(--c-text-muted);
+    font-size: 12px;
+  }
+  .spinner-sm {
+    width: 14px;
+    height: 14px;
+    border: 2px solid var(--c-border, #e5e7eb);
+    border-top-color: var(--c-primary);
+    border-radius: 50%;
+    animation: spin 0.6s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .load-older-btn {
+    display: block;
+    margin: 0 auto 8px;
+    padding: 6px 16px;
+    font-size: 12px;
+    color: var(--c-primary);
+    background: var(--c-primary-light);
+    border: none;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+  }
+  .load-older-btn:hover {
+    background: var(--c-primary);
+    color: #fff;
   }
 </style>

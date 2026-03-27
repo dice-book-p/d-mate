@@ -341,68 +341,53 @@ pub async fn set_autostart(app: AppHandle, enabled: bool) -> Result<ApiResponse,
 
 #[tauri::command]
 pub async fn check_update() -> Result<Value, String> {
-    let settings = database::get_settings();
-    let url = settings.update_server_url;
-    if url.is_empty() {
-        return Ok(serde_json::json!({"available": false, "message": "업데이트 서버가 설정되지 않았습니다."}));
-    }
+    let current = env!("CARGO_PKG_VERSION");
 
-    let check_url = format!("{}/update/version.json", url.trim_end_matches('/'));
-    let client = reqwest::Client::new();
-    match client.get(&check_url).timeout(std::time::Duration::from_secs(10)).send().await {
-        Ok(resp) => {
-            if resp.status().is_success() {
-                let data: Value = resp.json().await.unwrap_or_default();
-                let latest = data["version"].as_str().unwrap_or("0.0.0");
-                let current = env!("CARGO_PKG_VERSION");
-                let available = latest > current;
-                let platform_key = if cfg!(target_os = "macos") {
-                    if cfg!(target_arch = "aarch64") { "mac_aarch64" } else { "mac_x64" }
-                } else {
-                    "windows"
-                };
-                // fallback: 정확한 키 없으면 "mac" 키도 확인
-                let download_url = data["download"][platform_key].as_str()
-                    .or_else(|| data["download"]["mac"].as_str())
-                    .unwrap_or("");
-                Ok(serde_json::json!({
-                    "available": available,
-                    "current": current,
-                    "latest": latest,
-                    "notes": data["notes"].as_str().unwrap_or(""),
-                    "download_url": download_url,
-                }))
-            } else {
-                Ok(serde_json::json!({"available": false, "message": "서버 응답 오류"}))
+    // 1차: Desk 서버에서 업데이트 체크 (강제 업데이트 포함)
+    if let Some(server_url) = desk_client::get_server_url().await {
+        let url = format!("{}/api/update/check?version={}", server_url, current);
+        let client = reqwest::Client::new();
+        if let Ok(resp) = client
+            .get(&url)
+            .timeout(std::time::Duration::from_secs(5))
+            .send()
+            .await
+        {
+            if let Ok(data) = resp.json::<Value>().await {
+                if data["ok"].as_bool() == Some(true) {
+                    return Ok(data["data"].clone());
+                }
             }
         }
-        Err(e) => Ok(serde_json::json!({"available": false, "message": format!("연결 실패: {}", e)})),
     }
+
+    // 2차: 폴백 — Desk 미연결 시 기본값
+    Ok(serde_json::json!({
+        "available": false,
+        "force": false,
+        "current": current,
+    }))
 }
 
 #[tauri::command]
 pub async fn report_error(error_message: String, context: String) -> Result<ApiResponse, String> {
     let settings = database::get_settings();
-    if settings.error_reporting == 0 || settings.update_server_url.is_empty() {
+    if settings.error_reporting == 0 {
         return Ok(ApiResponse { ok: false, message: "에러 리포팅 비활성화".into() });
     }
 
-    let url = format!("{}/report/error", settings.update_server_url.trim_end_matches('/'));
-    let client = reqwest::Client::new();
-    let body = serde_json::json!({
-        "app": "d-mate",
-        "version": env!("CARGO_PKG_VERSION"),
-        "os": std::env::consts::OS,
-        "error": error_message,
-        "context": context,
-    });
+    // Desk 서버로 에러 리포트 전송
+    let msg = format!("{} | context: {}", error_message, context);
+    desk_client::report_error("app_error", &msg).await;
 
-    match client.post(&url).json(&body).timeout(std::time::Duration::from_secs(10)).send().await {
-        Ok(resp) if resp.status().is_success() => {
-            Ok(ApiResponse { ok: true, message: "에러 리포트 전송됨".into() })
-        }
-        _ => Ok(ApiResponse { ok: false, message: "전송 실패".into() }),
-    }
+    Ok(ApiResponse { ok: true, message: "에러 리포트 전송됨".into() })
+}
+
+#[tauri::command]
+pub async fn get_hostname() -> Result<String, String> {
+    Ok(hostname::get()
+        .map(|h| h.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "unknown".to_string()))
 }
 
 // ── Desk ──
@@ -439,13 +424,17 @@ pub async fn desk_disconnect() -> Result<ApiResponse, String> {
 pub async fn desk_submit_feedback(category: String, title: String, body: String) -> Result<ApiResponse, String> {
     match desk_client::submit_feedback(&category, &title, &body).await {
         Ok(_) => Ok(ApiResponse { ok: true, message: "피드백이 전송되었습니다.".into() }),
-        Err(e) => Ok(ApiResponse { ok: false, message: e }),
+        Err(_) => {
+            // 오프라인 큐에 저장
+            database::save_feedback_outbox(&category, &title, &body);
+            Ok(ApiResponse { ok: true, message: "서버 미연결 — 연결 시 자동 전송됩니다.".into() })
+        }
     }
 }
 
 #[tauri::command]
-pub async fn desk_get_feedback() -> Result<Value, String> {
-    match desk_client::get_my_feedback().await {
+pub async fn desk_get_feedback(page: Option<i32>, per_page: Option<i32>) -> Result<Value, String> {
+    match desk_client::get_my_feedback(page, per_page).await {
         Ok(data) => Ok(data),
         Err(e) => Ok(serde_json::json!({"error": e})),
     }
@@ -454,11 +443,12 @@ pub async fn desk_get_feedback() -> Result<Value, String> {
 // ── Messages / MQTT ──
 
 #[tauri::command]
-pub async fn get_messages(conversation_id: Option<String>, limit: Option<i32>) -> Result<Value, String> {
+pub async fn get_messages(conversation_id: Option<String>, limit: Option<i32>, offset: Option<i32>) -> Result<Value, String> {
     let lim = limit.unwrap_or(50);
+    let off = offset.unwrap_or(0);
     let messages = match conversation_id {
-        Some(cid) if !cid.is_empty() => database::get_local_messages(&cid, lim),
-        _ => database::get_all_local_messages(lim),
+        Some(cid) if !cid.is_empty() => database::get_local_messages(&cid, lim, off),
+        _ => database::get_all_local_messages(lim, off),
     };
     Ok(serde_json::json!(messages))
 }
@@ -467,6 +457,12 @@ pub async fn get_messages(conversation_id: Option<String>, limit: Option<i32>) -
 pub async fn mark_message_read(id: String) -> Result<ApiResponse, String> {
     database::mark_message_read(&id);
     Ok(ApiResponse { ok: true, message: "읽음 처리 완료".into() })
+}
+
+#[tauri::command]
+pub async fn mark_all_read() -> Result<ApiResponse, String> {
+    database::mark_all_messages_read();
+    Ok(ApiResponse { ok: true, message: "전체 읽음 처리 완료".into() })
 }
 
 #[tauri::command]
@@ -534,8 +530,8 @@ pub async fn get_conversations() -> Result<Value, String> {
 }
 
 #[tauri::command]
-pub async fn get_conversation_messages(conv_id: String) -> Result<Value, String> {
-    match desk_client::get_conversation_messages(&conv_id).await {
+pub async fn get_conversation_messages(conv_id: String, limit: Option<i32>, offset: Option<i32>) -> Result<Value, String> {
+    match desk_client::get_conversation_messages(&conv_id, limit, offset).await {
         Ok(data) => Ok(data),
         Err(e) => Ok(serde_json::json!({"error": e})),
     }
@@ -562,6 +558,14 @@ pub async fn mqtt_status() -> Result<Value, String> {
     Ok(serde_json::json!({
         "connected": mqtt_client::is_connected(),
     }))
+}
+
+#[tauri::command]
+pub async fn mqtt_reconnect() -> Result<ApiResponse, String> {
+    match mqtt_client::reconnect().await {
+        Ok(_) => Ok(ApiResponse { ok: true, message: "MQTT 재연결 성공".into() }),
+        Err(e) => Ok(ApiResponse { ok: false, message: format!("MQTT 재연결 실패: {}", e) }),
+    }
 }
 
 #[tauri::command]

@@ -4,6 +4,8 @@ use once_cell::sync::Lazy;
 
 use crate::checker;
 use crate::database;
+use crate::desk_client;
+use crate::mqtt_client;
 
 static PAUSED: AtomicBool = AtomicBool::new(false);
 static RUNNING: AtomicBool = AtomicBool::new(false);
@@ -74,7 +76,11 @@ pub async fn start() {
     let rx6 = rx.clone();
     tokio::spawn(async move { update_check_loop(rx6).await });
 
-    log::info!("Scheduler started (6 loops)");
+    // Desk 헬스체크 루프 (5분 주기)
+    let rx7 = rx.clone();
+    tokio::spawn(async move { desk_health_loop(rx7).await });
+
+    log::info!("Scheduler started (7 loops)");
 }
 
 pub async fn stop() {
@@ -313,4 +319,42 @@ pub async fn trigger_now() {
     let slot_key = chrono::Local::now().format("%Y-%m-%d_%H:%M").to_string();
     tokio::spawn(async move { checker::check_overdue_task(&slot_key).await });
     tokio::spawn(async { checker::check_mail().await });
+}
+
+// ── Desk 헬스체크 루프 (5분 주기) ──
+
+async fn desk_health_loop(mut cancel: tokio::sync::watch::Receiver<bool>) {
+    // 앱 시작 후 60초 뒤 첫 체크
+    tokio::select! {
+        _ = tokio::time::sleep(std::time::Duration::from_secs(60)) => {}
+        _ = cancel.changed() => { return; }
+    }
+
+    loop {
+        if !PAUSED.load(Ordering::Relaxed) {
+            let connected = desk_client::is_connected().await;
+            if connected {
+                match desk_client::health().await {
+                    Ok(true) => {
+                        // 서버 정상 — MQTT 미연결이면 재연결 시도
+                        if !mqtt_client::is_connected() {
+                            log::info!("Desk 정상, MQTT 미연결 — 재연결 시도");
+                            mqtt_client::reconnect().await.ok();
+                        }
+                        // 오프라인 큐 flush
+                        desk_client::flush_feedback_outbox().await;
+                    }
+                    _ => {
+                        log::warn!("Desk 서버 응답 없음");
+                    }
+                }
+            }
+        }
+
+        // 5분 대기
+        tokio::select! {
+            _ = tokio::time::sleep(std::time::Duration::from_secs(300)) => {}
+            _ = cancel.changed() => { return; }
+        }
+    }
 }

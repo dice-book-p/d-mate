@@ -1,7 +1,7 @@
 use once_cell::sync::Lazy;
 use rumqttc::{AsyncClient, EventLoop, MqttOptions, QoS, LastWill};
 use serde_json::json;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
@@ -12,6 +12,10 @@ static CONNECTED: AtomicBool = AtomicBool::new(false);
 static APP_HANDLE: Lazy<Mutex<Option<tauri::AppHandle>>> = Lazy::new(|| Mutex::new(None));
 /// Track the eventloop task so we can abort it on disconnect
 static EVENTLOOP_HANDLE: Lazy<Mutex<Option<JoinHandle<()>>>> = Lazy::new(|| Mutex::new(None));
+/// MQTT 재연결 시도 횟수 카운터
+static RETRY_COUNT: AtomicU32 = AtomicU32::new(0);
+/// 최대 재시도 횟수 (exponential backoff: 5→10→20→40→80→160→300초 최대)
+const MAX_RETRIES: u32 = 20;
 
 /// Store the Tauri AppHandle for emitting frontend events
 pub async fn init(handle: tauri::AppHandle) {
@@ -92,6 +96,7 @@ pub async fn connect(
         *lock = Some(client);
     }
     CONNECTED.store(true, Ordering::SeqCst);
+    RETRY_COUNT.store(0, Ordering::Relaxed);
 
     // Spawn the event loop in background and store the JoinHandle
     let code_clone = code.clone();
@@ -112,6 +117,12 @@ async fn run_eventloop(mut eventloop: EventLoop, _member_code: String) {
     loop {
         match eventloop.poll().await {
             Ok(event) => {
+                // 이벤트 수신 성공 시 재시도 카운터 초기화
+                RETRY_COUNT.store(0, Ordering::Relaxed);
+                if !CONNECTED.load(Ordering::SeqCst) {
+                    CONNECTED.store(true, Ordering::SeqCst);
+                    log::info!("MQTT 연결 복원됨");
+                }
                 if let rumqttc::Event::Incoming(rumqttc::Packet::Publish(publish)) = event {
                     handle_incoming_message(&publish.topic, &publish.payload).await;
                 }
@@ -128,8 +139,16 @@ async fn run_eventloop(mut eventloop: EventLoop, _member_code: String) {
                     log::info!("MQTT eventloop: client removed, stopping loop");
                     break;
                 }
-                // Wait before reconnecting (rumqttc handles reconnect internally)
-                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                // 재연결 횟수 제한 체크
+                let count = RETRY_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+                if count >= MAX_RETRIES {
+                    log::warn!("MQTT 재연결 최대 횟수({}) 초과, 재시도 중단", MAX_RETRIES);
+                    break;
+                }
+                // Exponential backoff: 5→10→20→40→80→160→300초(최대)
+                let delay = std::cmp::min(5 * 2u64.pow(count.saturating_sub(1)), 300);
+                log::info!("MQTT 재연결 시도 {}/{} ({}초 후)", count, MAX_RETRIES, delay);
+                tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
             }
         }
     }
@@ -173,7 +192,7 @@ async fn handle_incoming_message(topic: &str, payload: &[u8]) {
     let id = data["id"]
         .as_str()
         .map(|s| s.to_string())
-        .unwrap_or_else(|| format!("mqtt-{}", chrono::Utc::now().timestamp_millis()));
+        .unwrap_or_else(|| format!("mqtt-{}", chrono::Local::now().timestamp_millis()));
     let conversation_id = data["conversation_id"]
         .as_str()
         .unwrap_or(topic);
@@ -208,7 +227,7 @@ async fn handle_incoming_message(topic: &str, payload: &[u8]) {
     let created_at = data["created_at"]
         .as_str()
         .map(|s| s.to_string())
-        .unwrap_or_else(|| chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string());
+        .unwrap_or_else(|| chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string());
 
     // Save to local DB
     database::save_local_message(
@@ -254,6 +273,12 @@ async fn handle_incoming_message(topic: &str, payload: &[u8]) {
     if let Some(handle) = handle_lock.as_ref() {
         use tauri::Emitter;
         handle.emit("mqtt:message", &event_payload).ok();
+
+        // 피드백 상태 변경 시 별도 이벤트 emit
+        if msg_type == "feedback_update" {
+            native_notify::send("피드백 상태 변경", &body);
+            handle.emit("mqtt:feedback_update", &event_payload).ok();
+        }
     }
 }
 
@@ -276,7 +301,19 @@ pub async fn disconnect() {
     }
 
     CONNECTED.store(false, Ordering::SeqCst);
+    RETRY_COUNT.store(0, Ordering::Relaxed);
     log::info!("MQTT disconnected (client + eventloop cleaned up)");
+}
+
+/// 수동 재연결: 저장된 Desk 연결 정보로 MQTT 재연결 시도
+pub async fn reconnect() -> Result<(), String> {
+    let server_url = desk_client::get_server_url().await
+        .ok_or("Desk 서버 URL을 찾을 수 없습니다.")?;
+    let member_code = database::get_desk_config("member_code")
+        .ok_or("멤버 코드를 찾을 수 없습니다.")?;
+    let host = crate::extract_mqtt_host(&server_url);
+    RETRY_COUNT.store(0, Ordering::Relaxed);
+    connect(&host, 1883, &member_code, &member_code, &member_code).await
 }
 
 /// Check if MQTT is currently connected

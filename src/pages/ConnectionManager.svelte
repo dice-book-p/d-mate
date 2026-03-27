@@ -8,6 +8,7 @@
   import {
     getSettings, saveSettings, verifySworkLogin, verifyMailLogin,
     testTelegram, lookupTelegramChats, disconnectService, deskJoin, deskHealth, deskDisconnect,
+    getHostname,
   } from "../lib/api.js";
 
   let activeTab = $state("swork");
@@ -61,6 +62,13 @@
       }
     } catch (_) {
       deskChecked = true;
+    }
+
+    // Desk 디바이스명 기본값: PC hostname
+    if (!deskDeviceName) {
+      try {
+        deskDeviceName = await getHostname();
+      } catch (_) { /* ignore */ }
     }
   });
 

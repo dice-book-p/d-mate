@@ -21,7 +21,7 @@ impl SworkClient {
             .cookie_provider(jar)
             .timeout(std::time::Duration::from_secs(30))
             .build()
-            .unwrap();
+            .unwrap_or_else(|_| reqwest::Client::new());
 
         Self {
             client,

@@ -17,16 +17,18 @@ fn db_path() -> PathBuf {
 }
 
 static DB: Lazy<Mutex<Connection>> = Lazy::new(|| {
-    let conn = Connection::open(db_path()).expect("Failed to open database");
-    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
-        .unwrap();
+    let conn = Connection::open(db_path()).unwrap_or_else(|e| {
+        log::error!("DB 파일 열기 실패, 메모리 DB 사용: {}", e);
+        Connection::open_in_memory().expect("메모리 DB도 실패")
+    });
+    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;").ok();
     Mutex::new(conn)
 });
 
 pub fn init_db() {
     let conn = DB.lock().unwrap();
 
-    conn.execute_batch(
+    let create_result = conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS settings (
             id INTEGER PRIMARY KEY CHECK (id = 1),
             task_notify_enabled INTEGER DEFAULT 1,
@@ -121,9 +123,19 @@ pub fn init_db() {
             ephemeral_key   TEXT NOT NULL,
             nonce           TEXT NOT NULL,
             created_at      TEXT DEFAULT (datetime('now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS feedback_outbox (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            category   TEXT NOT NULL,
+            title      TEXT NOT NULL,
+            body       TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now','localtime'))
         );",
-    )
-    .expect("Failed to create tables");
+    );
+    if let Err(e) = create_result {
+        log::error!("테이블 생성 실패: {}", e);
+    }
 
     // v1.0.x → v1.1.0 마이그레이션: 기존 rule1/rule2 → 새 네이밍
     let migrations = [
@@ -344,14 +356,15 @@ pub fn try_log_notification(
 
 pub fn get_recent_notifications(limit: i32) -> Vec<NotificationLog> {
     let conn = DB.lock().unwrap();
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, rule_type, task_code, task_title, slot_key, sent_at, success
-             FROM notification_log ORDER BY sent_at DESC LIMIT ?",
-        )
-        .unwrap();
+    let mut stmt = match conn.prepare(
+        "SELECT id, rule_type, task_code, task_title, slot_key, sent_at, success
+         FROM notification_log ORDER BY sent_at DESC LIMIT ?",
+    ) {
+        Ok(s) => s,
+        Err(_) => return vec![],
+    };
 
-    stmt.query_map(params![limit], |row| {
+    let result = match stmt.query_map(params![limit], |row| {
         Ok(NotificationLog {
             id: row.get(0)?,
             rule_type: row.get(1)?,
@@ -361,10 +374,11 @@ pub fn get_recent_notifications(limit: i32) -> Vec<NotificationLog> {
             sent_at: row.get(5)?,
             success: row.get(6)?,
         })
-    })
-    .unwrap()
-    .filter_map(|r| r.ok())
-    .collect()
+    }) {
+        Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+        Err(_) => vec![],
+    };
+    result
 }
 
 // ── desk_config CRUD ──
@@ -406,20 +420,24 @@ pub fn save_local_message(
     sender_code: &str, sender_name: &str, title: &str, body: &str, created_at: &str,
 ) {
     let conn = DB.lock().unwrap();
+    let received_at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
     conn.execute(
-        "INSERT OR REPLACE INTO local_messages (id, conversation_id, type, sender_code, sender_name, title, body, created_at)
-         VALUES (?,?,?,?,?,?,?,?)",
-        params![id, conversation_id, msg_type, sender_code, sender_name, title, body, created_at],
+        "INSERT OR REPLACE INTO local_messages (id, conversation_id, type, sender_code, sender_name, title, body, created_at, received_at)
+         VALUES (?,?,?,?,?,?,?,?,?)",
+        params![id, conversation_id, msg_type, sender_code, sender_name, title, body, created_at, received_at],
     ).ok();
 }
 
-pub fn get_local_messages(conversation_id: &str, limit: i32) -> Vec<serde_json::Value> {
+pub fn get_local_messages(conversation_id: &str, limit: i32, offset: i32) -> Vec<serde_json::Value> {
     let conn = DB.lock().unwrap();
-    let mut stmt = conn.prepare(
+    let mut stmt = match conn.prepare(
         "SELECT id, conversation_id, type, sender_code, sender_name, title, body, is_read, created_at, received_at
-         FROM local_messages WHERE conversation_id=? ORDER BY created_at DESC LIMIT ?"
-    ).unwrap();
-    stmt.query_map(params![conversation_id, limit], |row| {
+         FROM local_messages WHERE conversation_id=? ORDER BY created_at DESC LIMIT ? OFFSET ?"
+    ) {
+        Ok(s) => s,
+        Err(_) => return vec![],
+    };
+    let result = match stmt.query_map(params![conversation_id, limit, offset], |row| {
         Ok(serde_json::json!({
             "id": row.get::<_, String>(0)?,
             "conversation_id": row.get::<_, String>(1)?,
@@ -432,16 +450,23 @@ pub fn get_local_messages(conversation_id: &str, limit: i32) -> Vec<serde_json::
             "created_at": row.get::<_, String>(8)?,
             "received_at": row.get::<_, String>(9)?,
         }))
-    }).unwrap().filter_map(|r| r.ok()).collect()
+    }) {
+        Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+        Err(_) => vec![],
+    };
+    result
 }
 
-pub fn get_all_local_messages(limit: i32) -> Vec<serde_json::Value> {
+pub fn get_all_local_messages(limit: i32, offset: i32) -> Vec<serde_json::Value> {
     let conn = DB.lock().unwrap();
-    let mut stmt = conn.prepare(
+    let mut stmt = match conn.prepare(
         "SELECT id, conversation_id, type, sender_code, sender_name, title, body, is_read, created_at, received_at
-         FROM local_messages ORDER BY created_at DESC LIMIT ?"
-    ).unwrap();
-    stmt.query_map(params![limit], |row| {
+         FROM local_messages ORDER BY created_at DESC LIMIT ? OFFSET ?"
+    ) {
+        Ok(s) => s,
+        Err(_) => return vec![],
+    };
+    let result = match stmt.query_map(params![limit, offset], |row| {
         Ok(serde_json::json!({
             "id": row.get::<_, String>(0)?,
             "conversation_id": row.get::<_, String>(1)?,
@@ -454,7 +479,11 @@ pub fn get_all_local_messages(limit: i32) -> Vec<serde_json::Value> {
             "created_at": row.get::<_, String>(8)?,
             "received_at": row.get::<_, String>(9)?,
         }))
-    }).unwrap().filter_map(|r| r.ok()).collect()
+    }) {
+        Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+        Err(_) => vec![],
+    };
+    result
 }
 
 pub fn mark_message_read(id: &str) {
@@ -462,6 +491,14 @@ pub fn mark_message_read(id: &str) {
     conn.execute(
         "UPDATE local_messages SET is_read=1 WHERE id=?",
         params![id],
+    ).ok();
+}
+
+pub fn mark_all_messages_read() {
+    let conn = DB.lock().unwrap();
+    conn.execute(
+        "UPDATE local_messages SET is_read=1 WHERE is_read=0",
+        [],
     ).ok();
 }
 
@@ -514,9 +551,46 @@ pub fn clear_all_data() {
          DELETE FROM desk_config;
          DELETE FROM local_messages;
          DELETE FROM local_outbox;
+         DELETE FROM feedback_outbox;
          DELETE FROM encryption_keys;
          DELETE FROM settings;
          INSERT OR IGNORE INTO settings (id) VALUES (1);",
     )
     .ok();
+}
+
+// ── feedback_outbox CRUD ──
+
+pub fn save_feedback_outbox(category: &str, title: &str, body: &str) {
+    let conn = DB.lock().unwrap();
+    conn.execute(
+        "INSERT INTO feedback_outbox (category, title, body) VALUES (?, ?, ?)",
+        params![category, title, body],
+    )
+    .ok();
+}
+
+pub fn get_feedback_outbox() -> Vec<(i64, String, String, String)> {
+    let conn = DB.lock().unwrap();
+    let mut stmt = match conn.prepare("SELECT id, category, title, body FROM feedback_outbox ORDER BY id") {
+        Ok(s) => s,
+        Err(_) => return vec![],
+    };
+    let result = match stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+        ))
+    }) {
+        Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+        Err(_) => vec![],
+    };
+    result
+}
+
+pub fn delete_feedback_outbox(id: i64) {
+    let conn = DB.lock().unwrap();
+    conn.execute("DELETE FROM feedback_outbox WHERE id=?", params![id]).ok();
 }

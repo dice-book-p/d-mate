@@ -78,18 +78,22 @@ export async function deskSubmitFeedback(category, title, body) {
   return invoke("desk_submit_feedback", { category, title, body });
 }
 
-export async function deskGetFeedback() {
-  return invoke("desk_get_feedback");
+export async function deskGetFeedback(page = 1, perPage = 10) {
+  return invoke("desk_get_feedback", { page, perPage });
 }
 
 // ── Messages / MQTT ──
 
-export async function getMessages(conversationId = null, limit = 50) {
-  return invoke("get_messages", { conversationId, limit });
+export async function getMessages(conversationId = null, limit = 30, offset = 0) {
+  return invoke("get_messages", { conversationId, limit, offset });
 }
 
 export async function markMessageRead(id) {
   return invoke("mark_message_read", { id });
+}
+
+export async function markAllRead() {
+  return invoke("mark_all_read");
 }
 
 export async function getUnreadCount() {
@@ -116,8 +120,8 @@ export async function getConversations() {
   return invoke("get_conversations");
 }
 
-export async function getConversationMessages(convId) {
-  return invoke("get_conversation_messages", { convId });
+export async function getConversationMessages(convId, limit = 50, offset = 0) {
+  return invoke("get_conversation_messages", { convId, limit, offset });
 }
 
 export async function dmDelivered(msgId) {
@@ -130,6 +134,14 @@ export async function dmRead(msgId) {
 
 export async function getMqttStatus() {
   return invoke("mqtt_status");
+}
+
+export async function mqttReconnect() {
+  return invoke("mqtt_reconnect");
+}
+
+export async function getHostname() {
+  return invoke("get_hostname");
 }
 
 export async function hideWindow() {

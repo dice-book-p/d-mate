@@ -1,8 +1,9 @@
 <script>
   import Card from "../components/Card.svelte";
   import { onMount, onDestroy } from "svelte";
+  import ConnBanner from "../components/ConnBanner.svelte";
   import {
-    getMessages, markMessageRead, getUnreadCount, getMqttStatus,
+    getMessages, markMessageRead, markAllRead, getUnreadCount, getMqttStatus,
     getConversations, getContacts,
   } from "../lib/api.js";
   import { unreadCount, showToast, navigateTo, chatParams } from "../lib/stores.js";
@@ -15,6 +16,12 @@
   let loading = $state(true);
   let mqttConnected = $state(false);
   let unlisten = null;
+
+  // 페이지네이션 상태
+  const PER_PAGE = 30;
+  let msgPage = $state(1);
+  let hasMore = $state(true);
+  let loadingMore = $state(false);
 
   const typeLabel = { notice: "전체 공지", notify: "개인 알림", dm: "메시지", unknown: "알림" };
   const typeIcon = { notice: "📢", notify: "🔔", dm: "💬", unknown: "🔔" };
@@ -42,15 +49,28 @@
     if (unlisten) unlisten();
   });
 
-  async function loadMessages() {
+  async function loadMessages(page = 1) {
     try {
-      const data = await getMessages(null, 100);
-      messages = Array.isArray(data) ? data : [];
+      const data = await getMessages(null, PER_PAGE, (page - 1) * PER_PAGE);
+      const fetched = Array.isArray(data) ? data : [];
+      if (page === 1) {
+        messages = fetched;
+      } else {
+        messages = [...messages, ...fetched];
+      }
+      hasMore = fetched.length >= PER_PAGE;
+      msgPage = page;
     } catch (e) {
       console.error("Failed to load messages:", e);
-      messages = [];
+      if (page === 1) messages = [];
     }
     await refreshUnread();
+  }
+
+  async function loadMoreMessages() {
+    loadingMore = true;
+    await loadMessages(msgPage + 1);
+    loadingMore = false;
   }
 
   async function loadConversations() {
@@ -59,7 +79,7 @@
       if (data?.error) {
         conversations = [];
       } else {
-        conversations = Array.isArray(data) ? data : (data?.conversations || []);
+        conversations = data?.data || (Array.isArray(data) ? data : []);
       }
     } catch (e) {
       console.error("Failed to load conversations:", e);
@@ -73,7 +93,7 @@
       if (data?.error) {
         contacts = [];
       } else {
-        contacts = Array.isArray(data) ? data : (data?.contacts || []);
+        contacts = data?.data || (Array.isArray(data) ? data : []);
       }
     } catch (e) {
       console.error("Failed to load contacts:", e);
@@ -109,10 +129,10 @@
 
   function switchTab(tab) {
     activeTab = tab;
-    if (tab === "conversations" && conversations.length === 0) {
+    if (tab === "conversations" && conversations.length === 0 && mqttConnected) {
       loadConversations();
     }
-    if (tab === "contacts" && contacts.length === 0) {
+    if (tab === "contacts" && contacts.length === 0 && mqttConnected) {
       loadContacts();
     }
   }
@@ -138,7 +158,8 @@
   function formatTime(dateStr) {
     if (!dateStr) return "";
     try {
-      const d = new Date(dateStr.replace(" ", "T") + (dateStr.includes("Z") ? "" : "Z"));
+      // 서버가 KST로 저장하므로 로컬 시간으로 파싱 (Z 미추가)
+      const d = new Date(dateStr.replace(" ", "T"));
       const now = new Date();
       const diff = now - d;
       if (diff < 60000) return "방금";
@@ -151,7 +172,13 @@
   }
 
   // 공지 + 개인알림 필터 (DM 제외)
-  let noticeMessages = $derived(messages.filter((m) => m.type !== "dm"));
+  let noticeMessages = $derived(messages.filter((m) => m.type === "notice" || m.type === "notify"));
+
+  // Desk 미연결 배너
+  const offlineBanners = $derived.by(() => {
+    if (!mqttConnected) return [{ message: "Desk 서버에 연결되지 않았습니다. 연결 관리에서 설정해주세요.", linkText: "연결 관리" }];
+    return [];
+  });
 </script>
 
 <div class="page">
@@ -188,6 +215,15 @@
         <small>공지사항이나 알림이 수신되면 여기에 표시됩니다.</small>
       </div>
     {:else}
+      {#if noticeMessages.some(m => !m.is_read)}
+        <div class="mark-all-wrap">
+          <button class="mark-all-btn" onclick={async () => {
+            await markAllRead();
+            messages = messages.map(m => ({...m, is_read: 1}));
+            await refreshUnread();
+          }}>전체 읽음</button>
+        </div>
+      {/if}
       <div class="message-list">
         {#each noticeMessages as msg}
           <button
@@ -215,11 +251,24 @@
           </button>
         {/each}
       </div>
+      {#if hasMore}
+        <div class="load-more-wrap">
+          <button class="load-more-btn" onclick={loadMoreMessages} disabled={loadingMore}>
+            {loadingMore ? "로딩 중..." : "더 보기"}
+          </button>
+        </div>
+      {/if}
     {/if}
 
   <!-- 대화 탭 -->
   {:else if activeTab === "conversations"}
-    {#if conversations.length === 0}
+    <ConnBanner items={offlineBanners} />
+    {#if !mqttConnected}
+      <div class="empty-state">
+        <span class="empty-icon">💬</span>
+        <p>Desk 서버에 연결하면 대화를 확인할 수 있습니다.</p>
+      </div>
+    {:else if conversations.length === 0}
       <div class="empty-state">
         <span class="empty-icon">💬</span>
         <p>대화가 없습니다.</p>
@@ -249,7 +298,13 @@
 
   <!-- 연락처 탭 -->
   {:else if activeTab === "contacts"}
-    {#if contacts.length === 0}
+    <ConnBanner items={offlineBanners} />
+    {#if !mqttConnected}
+      <div class="empty-state">
+        <span class="empty-icon">👥</span>
+        <p>Desk 서버에 연결하면 연락처를 확인할 수 있습니다.</p>
+      </div>
+    {:else if contacts.length === 0}
       <div class="empty-state">
         <span class="empty-icon">👥</span>
         <p>연락처가 없습니다.</p>
@@ -538,5 +593,53 @@
   .dm-start-btn:hover {
     background: var(--c-primary);
     color: #fff;
+  }
+
+  /* Mark all read */
+  .mark-all-wrap {
+    display: flex;
+    justify-content: flex-end;
+    margin-bottom: 8px;
+  }
+  .mark-all-btn {
+    padding: 5px 14px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--c-text-secondary);
+    background: var(--c-surface);
+    border: 1px solid var(--c-border, #e5e7eb);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+  }
+  .mark-all-btn:hover {
+    background: var(--c-primary-light);
+    color: var(--c-primary);
+  }
+
+  /* Load more */
+  .load-more-wrap {
+    display: flex;
+    justify-content: center;
+    padding: 16px 0 8px;
+  }
+  .load-more-btn {
+    padding: 8px 24px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--c-primary);
+    background: var(--c-primary-light);
+    border: none;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+  }
+  .load-more-btn:hover:not(:disabled) {
+    background: var(--c-primary);
+    color: #fff;
+  }
+  .load-more-btn:disabled {
+    opacity: 0.6;
+    cursor: default;
   }
 </style>

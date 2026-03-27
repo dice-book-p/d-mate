@@ -5,7 +5,7 @@
   import { settings, showToast, pageDirty } from "../lib/stores.js";
   import { showDialog } from "../lib/dialog.js";
   import { isDirty, snapshot } from "../lib/dirty.js";
-  import { getSettings, saveSettings, setAutostart, resetAllData, quitApp } from "../lib/api.js";
+  import { getSettings, saveSettings, setAutostart, resetAllData, quitApp, checkUpdate } from "../lib/api.js";
   import { check } from "@tauri-apps/plugin-updater";
   import { relaunch } from "@tauri-apps/plugin-process";
 
@@ -68,10 +68,34 @@
   async function doCheckUpdate() {
     checking = true;
     try {
+      // Desk 서버에서 업데이트 정보 조회 (force 여부 포함)
+      let deskInfo = null;
+      try {
+        deskInfo = await checkUpdate();
+      } catch (_) {}
+
+      // Tauri updater로 실제 업데이트 확인
       const update = await check();
       if (update) {
-        updateInfo = { available: true, latest: update.version, notes: update.body || "", _update: update };
+        updateInfo = {
+          available: true,
+          latest: update.version,
+          notes: update.body || deskInfo?.notes || "",
+          force: deskInfo?.force || false,
+          _update: update,
+        };
         showToast(`새 버전 v${update.version} 사용 가능!`, "info");
+      } else if (deskInfo?.available) {
+        // Tauri updater에는 없지만 Desk에서 업데이트 있다고 할 때
+        updateInfo = {
+          available: true,
+          latest: deskInfo.latest || "?",
+          notes: deskInfo.notes || "",
+          force: deskInfo.force || false,
+          download_url: deskInfo.download_url || "",
+          _update: null,
+        };
+        showToast(`새 버전 v${deskInfo.latest} 사용 가능!`, "info");
       } else {
         updateInfo = { available: false };
         showToast("최신 버전입니다.", "success");
@@ -84,7 +108,19 @@
   }
 
   async function doDownloadUpdate() {
-    if (!updateInfo?._update) return;
+    if (!updateInfo?.available) return;
+
+    // Tauri updater를 사용할 수 없는 경우 (Desk 전용 업데이트) 브라우저로 열기
+    if (!updateInfo._update) {
+      if (updateInfo.download_url) {
+        try {
+          const { openUrl } = await import("@tauri-apps/plugin-opener");
+          await openUrl(updateInfo.download_url);
+        } catch (_) {}
+      }
+      return;
+    }
+
     downloading = true;
     downloadProgress = 0;
     try {
@@ -204,7 +240,26 @@
             </button>
           </div>
         </div>
-        {#if updateInfo?.available}
+        {#if updateInfo?.available && updateInfo?.force}
+          <div class="update-notice force">
+            <div>
+              <strong>필수 업데이트</strong> — v{updateInfo.latest}
+              {#if updateInfo.notes}
+                <span class="update-notes">: {updateInfo.notes}</span>
+              {/if}
+            </div>
+            {#if downloading}
+              <div class="progress-bar mt-8">
+                <div class="progress-fill" style="width: {downloadProgress}%"></div>
+              </div>
+              <span class="progress-text">{downloadProgress}% 다운로드 중...</span>
+            {:else}
+              <button class="btn btn-danger btn-sm mt-8" onclick={doDownloadUpdate}>
+                지금 업데이트
+              </button>
+            {/if}
+          </div>
+        {:else if updateInfo?.available}
           <div class="update-notice">
             <div>
               새 버전 <strong>v{updateInfo.latest}</strong> 사용 가능
@@ -281,6 +336,10 @@
     border-radius: var(--radius-sm); font-size: 12px;
   }
   .update-notes { opacity: 0.7; }
+  .update-notice.force {
+    background: #fef2f2; color: #dc2626;
+    border: 1px solid #fecaca;
+  }
   .progress-bar {
     height: 6px; background: #e5e7eb; border-radius: 3px; overflow: hidden;
   }

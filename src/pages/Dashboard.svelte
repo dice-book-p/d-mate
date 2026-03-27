@@ -9,6 +9,7 @@
   let activeAlerts = $state([]);
   let loading = $state(true);
   let paused = $state(false);
+  let showAllLogs = $state(false);
 
   onMount(async () => {
     await refresh();
@@ -214,7 +215,7 @@
               </tr>
             </thead>
             <tbody>
-              {#each data.recent_logs.slice(0, 20) as log}
+              {#each (showAllLogs ? data.recent_logs : data.recent_logs.slice(0, 20)) as log}
                 <tr>
                   <td><span class="badge badge-sm">{ruleTypeLabel(log.rule_type)}</span></td>
                   <td class="mono">{log.task_code}</td>
@@ -226,6 +227,13 @@
             </tbody>
           </table>
         </div>
+        {#if data.recent_logs.length > 20}
+          <div class="log-more-wrap">
+            <button class="log-more-btn" onclick={() => showAllLogs = !showAllLogs}>
+              {showAllLogs ? "접기" : `더 보기 (${data.recent_logs.length - 20}건 더)`}
+            </button>
+          </div>
+        {/if}
       {:else}
         <p class="empty-state">아직 알림 기록이 없습니다.</p>
       {/if}
@@ -392,6 +400,26 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+  .log-more-wrap {
+    display: flex;
+    justify-content: center;
+    padding: 10px 0 2px;
+  }
+  .log-more-btn {
+    padding: 6px 16px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--c-primary);
+    background: transparent;
+    border: 1px solid var(--c-primary);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+  }
+  .log-more-btn:hover {
+    background: var(--c-primary);
+    color: #fff;
   }
 
   @media (max-width: 900px) {

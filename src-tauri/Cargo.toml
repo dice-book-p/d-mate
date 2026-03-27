@@ -37,3 +37,4 @@ x25519-dalek = { version = "2", features = ["static_secrets"] }
 aes-gcm = "0.10"
 rand = "0.8"
 base64 = "0.22"
+hostname = "0.4"
