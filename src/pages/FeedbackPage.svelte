@@ -1,12 +1,13 @@
 <script>
   import Card from "../components/Card.svelte";
   import ConnBanner from "../components/ConnBanner.svelte";
-  import { showToast } from "../lib/stores.js";
+  import { showToast, deskState } from "../lib/stores.js";
   import { deskSubmitFeedback, deskGetFeedback, deskHealth } from "../lib/api.js";
   import { onMount, onDestroy } from "svelte";
   import { listen } from "@tauri-apps/api/event";
 
   let deskConnected = $state(false);
+  deskState.subscribe(s => { deskConnected = s.connected; });
   let feedbackList = $state([]);
   let loading = $state(true);
   let submitting = $state(false);
@@ -33,11 +34,17 @@
   const statusColor = { open: "blue", in_progress: "orange", resolved: "green", closed: "gray" };
 
   onMount(async () => {
-    try {
-      const h = await deskHealth();
-      deskConnected = h.connected;
-      if (deskConnected) await loadFeedback();
-    } catch (e) { /* desk not connected */ }
+    // deskState store에서 이미 체크됐으면 그 값 사용
+    let ds;
+    deskState.subscribe(v => ds = v)();
+    if (!ds.checked) {
+      try {
+        const h = await deskHealth();
+        deskConnected = h.connected;
+        deskState.update(s => ({ ...s, connected: h.connected, reachable: h.reachable, checked: true }));
+      } catch (e) { /* desk not connected */ }
+    }
+    if (deskConnected) await loadFeedback();
     loading = false;
 
     // 피드백 상태 변경 실시간 수신
